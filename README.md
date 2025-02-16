@@ -2,6 +2,10 @@
 emphasis on keyboard interaction. It also aims to be feature-rich,
 customizable, and extendable via user scripts.
 
+[Try it in your browser](https://bolphen.github.io/pixelvim/)
+
+![screencast](https://github.com/user-attachments/assets/b8c26736-96ca-4220-975a-98116add6d66)
+
 **Note. The editor is very much usable already, and there are data recovery à
 la `vim` in case of crashes. However, the project is still in alpha, and you
 are encouraged to back up your works.**
