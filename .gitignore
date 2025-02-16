@@ -1,0 +1,6 @@
+/target
+Cargo.lock
+tags
+*.png
+*.gif
+_*

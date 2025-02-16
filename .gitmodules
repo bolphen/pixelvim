@@ -1,0 +1,6 @@
+[submodule "miniquad"]
+	path = miniquad
+	url = https://github.com/bolphen/miniquad
+[submodule "nanoserde"]
+	path = nanoserde
+	url = https://github.com/bolphen/nanoserde

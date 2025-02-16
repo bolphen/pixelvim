@@ -1,0 +1,74 @@
+Built with miniquad
+
+`pixelvim` is a pixel editor inspired by the `vim` text editor, with an
+emphasis on keyboard interaction. It also aims to be feature-rich,
+customizable, and extendable via user scripts.
+
+MODES
+=====
+There are two main modes:
+
+* Normal mode:
+    Use the mouse to draw normally, using a variety of tools.
+
+* Visual mode:
+    You can use the same tools, but instead of drawing directly on the canvas,
+    you add to or subtract from a selection.
+
+By default, `V` toggles normal/visual mode.
+
+There's also command mode, where you can type in commands in a prompt at the
+bottom of the screen (by typing `:` by default).
+
+TOOLS
+=====
+* `B` brush
+      fill. brush (i.e., contour)
+* `F` cont. flood
+      disc. flood
+* `R` outl. rect.
+      fill. rect.
+* `M` move
+
+Modes and tools can be swapped live. For example, if you click the mouse when
+using outline rect in normal mode, and want to swap to filled rect in visual
+mode, you can do so by typing `R` and `V` before releasing the mouse.
+
+Similarly, the following global settings can be changed live (i.e., before you
+release the mouse).
+
+* `E` toggles draw/erase (or add/sub in visual mode)
+
+    Note. In normal mode, when the foreground color has alpha < 255, `E`
+    instead rotates in
+
+        draw -> replace -> erase
+
+    modes, allowing drawing with transparent colors. This also applies to the
+    `move` tool.
+
+* `Q` toggle pixel-perfect mode
+
+The key mapping is very customizable. The default one is what I find
+reasonable, but you can completely change it (for example, to match the ones in
+your favorite image editor).
+
+For most cases, it's just
+
+    map j down
+
+You can combine actions to create more complex shortcuts, using `THEN` as
+separator.
+
+    map w visual THEN flood
+
+You can also map keys to commands
+
+    map x :toggle x-sym
+
+The line between actions and commands is not that clear. Mostly, actions are
+those you can perform while painting; commands are more complex ones that
+require you to go into command mode and are marked with a `:`.
+
+The key mapping can be set up in a config file. You can also change them in
+command mode or by `source`ing a config file.

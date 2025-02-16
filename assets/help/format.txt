@@ -1,0 +1,20 @@
+Valid formats
+
+Size (for `new` or `resize`)
+
+    60x60 (letter `x`)
+    60,60 (comma)
+    60 60 (whitespace)
+
+Color
+
+    #ffffff
+    #ffffffff (alpha in hex)
+    #ffffff/100 (alpha in percentage)
+
+    255,255,255 (comma)
+    255,255,255,255
+    255 255 255 (whitespace)
+    255 255 255 255
+
+    $42 (for palette index)

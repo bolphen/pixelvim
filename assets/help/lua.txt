@@ -1,0 +1,72 @@
+Note: following Lua convention, indices start at 1. This applies to layer
+number, frame number, image coordinates, etc.
+
+VARIABLES
+=========
+The following special variables are used to communicate with pixelvim.
+
+`MODIFIER`: contains the current modifier (for now is just a number)
+
+    FIELDS
+        .value : a number
+
+`INPUT`: contains the input images
+
+    FIELDS
+        .width
+        .height
+        .layerCount : total number of layers
+        .frameCount : total number of frames
+        .currentLayer
+        .currentFrame
+
+    METHODS
+        :getCurrent() -> Image : get the current frame image
+        :get(layer, frame) -> Image : get a specific frame image
+
+`OUTPUT`: the variable for the result
+
+    FIELDS
+        .name : the name that will appear in undo/redo
+
+    METHODS
+        :changeCurrent(newImage) : apply changes to the current frame
+        :change(layer, frame, newImage) : apply changes to a certain frame
+
+DATATYPES
+=========
+
+`Image`: images provided by `INPUT` contain the following fields and methods.
+You can also construct your own ones using tables with the necessary fields.
+
+    FIELDS
+        .width
+        .height
+        .data : a sequence of length 4*width*height, RGBA values in [0,255]
+
+    METHODS
+        .new(width, height) -> Image : create a new image
+        :clone() -> Image : create a deepcopy of the image
+        :blank() -> Image : create a blank image with the same size
+        :get(x, y) -> Color : get the color at (x, y) and nil if out of bounds
+            The output is a table with fields r,g,b,a in [0,255]
+        :set(x, y, r, g, b, a) : set the color at (x, y) to the given value,
+            where r,g,b,a are integers in [0,255] 
+        :setLinear(x, y, r, g, b, a, srgb: bool) : set the color at (x, y) to
+            the given value, where r,g,b,a are floats in [0,1]
+            Since values in [0,255] are usually in the sRGB space, you need
+            to specify whether to encode them or not
+
+`Color`: individual pixels returned by `image:get(x, y)`
+
+    FIELDS
+        .r: integer in [0,255]
+        .g: integer in [0,255]
+        .b: integer in [0,255]
+        .a: integer in [0,255]
+
+    METHODS
+        :toLinear(srgb: bool) -> [float; 4] : convert the color to a sequence
+            of floats in [0,1]
+            Since values in [0,255] are usually in the sRGB space, you need
+            to specify whether to decode them or not

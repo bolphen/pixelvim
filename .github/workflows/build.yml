@@ -1,0 +1,50 @@
+on: push
+
+env:
+  OUTPUT_NAME: target/wasm32-unknown-unknown/release/pixelvim.wasm
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref }}
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: wasm32-unknown-unknown
+        override: true
+
+    - name: Submodules
+      run: git submodule update --init --recursive
+
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --target=wasm32-unknown-unknown
+
+    - name: Setup web
+      run: cp assets/wasm/* target/wasm32-unknown-unknown/release;
+           cp .gitignore target;
+           git checkout --orphan web;
+           git rm -rf .;
+           mv target/.gitignore .;
+           cp target/wasm32-unknown-unknown/release/pixelvim.wasm .;
+           cp target/wasm32-unknown-unknown/release/index.html .;
+           cp target/wasm32-unknown-unknown/release/favicon.ico .;
+           cp target/wasm32-unknown-unknown/release/*.js .;
+           git add -A;
+
+    - name: Autocommit
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: Automated Change
+        branch: web
+        push_options: '--force'
