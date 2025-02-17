@@ -43,7 +43,7 @@ impl Engine {
             }
             Command::New(size) => {
                 let size = size.map(|s| (s.0 as _, s.1 as _)).unwrap_or((32, 32));
-                self.new_buffer_from_image(Image::new_with(size.0, size.1, Color(0, 0, 0, 0)));
+                self.new_buffer_with_size(size.0, size.1);
                 self.mode.set_to_normal(None);
             }
             Command::Help => {

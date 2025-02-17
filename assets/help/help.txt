@@ -1,8 +1,40 @@
-Built with miniquad
+Built with Rust and miniquad
 
 `pixelvim` is a pixel editor inspired by the `vim` text editor, with an
 emphasis on keyboard interaction. It also aims to be feature-rich,
 customizable, and extendable via user scripts.
+
+GETTING STARTED
+===============
+The interface should be familiar if you are a vim-user.
+
+Enter command mode by typing `:` (`Shift-;` if you are not using a qwerty
+layout; remappable). Typing `tab` then will give you a list of available
+commands. Here are the basic ones.
+
+* `:new` or `:new 64 64` will create an empty canvas.
+
+* `:edit <filename>` opens image from the disk. Currently png, gif, and
+  aseprite formats are supported. You can also drag-and-drop file into the
+  window to open them (should work on Linux and in browser).
+
+* `:write <filename>` saves image to the disk. Currently only png and gif are
+  supported.
+
+DATA RECOVERY
+=============
+If the buffer contains unsaved changes, the file name will be followed with
+the symbol `[+]`. For buffer that has a path (e.g., "image.png"), pixelvim will
+create a temporary file named ".image.png.swap" in the same folder, which
+contains the entire session (including undo / redo history). So if the software
+crashes or your computer dies, pixelvim can recover your work next time.
+
+Note that pixelvim deletes the swap file upon saving with `:write` or a forced
+quit with `:q!`.
+
+If your image doesn't have a path, you will see `[No Name]` instead. In this
+case, no swap file will be saved and you are on your own. So you should save
+your image to give it a path as soon as possible!
 
 MODES
 =====
@@ -15,20 +47,37 @@ There are two main modes:
     You can use the same tools, but instead of drawing directly on the canvas,
     you add to or subtract from a selection.
 
-By default, `V` toggles normal/visual mode.
+By default, `V` toggles normal / visual mode.
 
 There's also command mode, where you can type in commands in a prompt at the
-bottom of the screen (by typing `:` by default).
+bottom of the screen (by typing `:` by default). An insert mode is planned for
+drawing with only keyboard.
 
 TOOLS
 =====
-* `B` brush
-      fill. brush (i.e., contour)
-* `F` cont. flood
-      disc. flood
-* `R` outl. rect.
-      fill. rect.
+* `B` brush and fill. brush (i.e., contour)
+
+    You can specify brush size and shape
+    * `:set brush/size=5`
+    * `:set brush/shape=rect 3` available shapes including `rect`, `round`, or
+      `%` for custom shape from the current selection
+
+* `F` cont. flood and disc. flood
+
+    Flood that's continuous or discontinuous.
+    You can specify the flood tolerance with `:set flood/tolerance=10` for a
+    value in [0,255]. You can also use a one-time tolerance with a number
+    modifier (i.e., type `10` then use flood).
+
+* `R` outl. rect. and fill. rect.
+
+    Rectangles
+
 * `M` move
+
+    Move the selected pixels or the whole canvas if the selection is empty.
+    You can use the vi-movement keys, with number modifiers (`5j` for moving 5
+    pixels down).
 
 Modes and tools can be swapped live. For example, if you click the mouse when
 using outline rect in normal mode, and want to swap to filled rect in visual
@@ -37,15 +86,23 @@ mode, you can do so by typing `R` and `V` before releasing the mouse.
 Similarly, the following global settings can be changed live (i.e., before you
 release the mouse).
 
-* `E` toggles draw/erase (or add/sub in visual mode)
+* `E` and `-` toggles draw / erase (or add / sub in visual mode)
 
-    Note. In normal mode, when the foreground color has alpha < 255, `E`
-    instead rotates in
+    The eraser in pixelvim is different from most other editors: it's not a
+    tool on its own, but a mode. You can use all tools in draw mode or erase
+    mode. For this reason, I mapped `E` to toggle erase mode AND set tool to
+    brush to avoid some confusion. `-` will only toggle the draw mode and not
+    set the tool. You can change this mapping of course.
+
+    Note. In normal mode, when the foreground color has alpha < 255, it will
+    instead rotate in
 
         draw -> replace -> erase
 
     modes, allowing drawing with transparent colors. This also applies to the
-    `move` tool.
+    "move" tool (i.e., if you are moving some image with transparent
+    background, replace will make the target area transparent instead of seeing
+    through).
 
 * `Q` toggle pixel-perfect mode
 
@@ -72,3 +129,52 @@ require you to go into command mode and are marked with a `:`.
 
 The key mapping can be set up in a config file. You can also change them in
 command mode or by `source`ing a config file.
+
+LAYER AND FRAME
+===============
+pixelvim supports layers and frames. Relevant commands begin with `:layer/...`
+and `:frame/...`.
+
+By default `O` maps to `:layer/new/below` and `Shift-O` to `:layer/new/above`,
+following vim.
+
+Layers can be merged. More blending options are planned.
+
+The timeline UI accepts mouse click but it's kind of clunky. I do wish to
+improve it in the future.
+
+ANIMATION
+=========
+pixelvim has some useful features for creating animations, although many others
+are currently missing.
+
+* Play or pause with `:toggle animation`, mapped to `space` by default. Show or
+  hide the full strip with `:toggle animation/strip`.
+
+* Set animation playback speed with `:set animation/speed=1`. It's probably
+  useful to bind a slow setting and a normal setting to `F1` and `F2`, for
+  example.
+
+* Add new frames with `:frame/add/right`, mapped to `enter` by default. Takes a
+  number modifier.
+
+* `toggle animation/edit/all` switches between "edit all" mode and "live" mode,
+  mapped to `A`. You will see "all" or "one" below the timeline.
+
+    * In "edit all" mode, changes apply to all frames.
+    * In "edit one" or "live" mode, changes apply to a single frame. Since you
+      can draw while the animation is playing, this is useful for creating
+      particle effects (fire, sparks, snow, ...)
+
+LUA EXTENSION
+=============
+pixelvim has support for lua script performing simple "shader-like"
+transformations on the image.
+
+For now you can change individual frames, which will be registered as a single
+edit that can be undone / redone (if the edit changes the size, it must be
+performed uniformly over all layers and frames). Not possible yet to change the
+timeline layout (i.e., insert / delete). See the "script" folder for some
+examples and possible use cases.
+
+You can map `:run script.lua` to a key for quick access.

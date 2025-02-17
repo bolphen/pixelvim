@@ -33,14 +33,16 @@ jobs:
     - name: Setup web
       run: cp assets/wasm/* target/wasm32-unknown-unknown/release;
            cp .gitignore target;
-           git checkout --orphan web;
-           git rm -rf .;
+           git fetch origin web;
+           git checkout web;
            mv target/.gitignore .;
            cp target/wasm32-unknown-unknown/release/pixelvim.wasm .;
            cp target/wasm32-unknown-unknown/release/index.html .;
            cp target/wasm32-unknown-unknown/release/favicon.ico .;
            cp target/wasm32-unknown-unknown/release/*.js .;
            git add -A;
+           git rm -rf miniquad;
+           git rm -rf nanoserde;
 
     - name: Autocommit
       uses: stefanzweifel/git-auto-commit-action@v5

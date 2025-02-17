@@ -1,3 +1,4 @@
+# <img width="48" height="48" align="top" src="https://raw.githubusercontent.com/bolphen/pixelvim/release/assets/icon.png"> pixelvim
 `pixelvim` is a pixel editor inspired by the `vim` text editor, with an
 emphasis on keyboard interaction. It also aims to be feature-rich,
 customizable, and extendable via user scripts.

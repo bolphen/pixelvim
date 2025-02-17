@@ -495,6 +495,9 @@ impl Engine {
             &mut self.buffers[self.current]
         }
     }
+    pub fn new_buffer_with_size(&mut self, width: usize, height: usize) -> &mut Buffer {
+        self.new_buffer_from_image(Image::new_with(width, height, (0, 0, 0, 0).into()))
+    }
     fn new_buffer_from_image(&mut self, image: Image) -> &mut Buffer {
         self.new_buffer_from_layers(vec![vec![image]], None, vec![100])
     }

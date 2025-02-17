@@ -35,6 +35,9 @@ impl Stage {
                 }
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        // open an empty canvas for the web version
+        stage.engine.new_buffer_with_size(32, 32);
         for path in paths {
             stage.engine.load_path(&path);
         }
