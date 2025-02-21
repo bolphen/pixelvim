@@ -74,6 +74,7 @@ impl Color {
     pub const BLACK: Color = Color(0, 0, 0, 255);
     pub const RED: Color = Color(255, 0, 0, 255);
     pub const ORANGE: Color = Color(255, 128, 0, 255);
+    pub const CYAN: Color = Color(128, 255, 255, 255);
     pub fn alpha(self, a: u8) -> Color {
         (self.0, self.1, self.2, a).into()
     }
@@ -95,17 +96,17 @@ impl Color {
         );
     }
     pub fn brightness(&self) -> f32 {
-        let color: [f32; 4] = (*self).to_linear(false);
+        let color: [f32; 4] = self.to_linear(false);
         (0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]) * color[3] + (1. - color[3])
     }
     pub fn chroma(&self) -> f32 {
-        let color: [f32; 4] = (*self).to_linear(false);
+        let color: [f32; 4] = self.to_linear(false);
         let max = color[0].max(color[1]).max(color[2]);
         let min = color[0].min(color[1]).min(color[2]);
         (max - min) * color[3]
     }
     pub fn hue(&self) -> f32 {
-        let color: [f32; 4] = (*self).to_linear(false);
+        let color: [f32; 4] = self.to_linear(false);
         let max = color[0].max(color[1]).max(color[2]);
         let min = color[0].min(color[1]).min(color[2]);
         if max == min {
@@ -164,7 +165,7 @@ impl Color {
         }
     }
     pub fn blend(&self, color: Color, srgb: bool) -> Color {
-        let dst: [f32; 4] = (*self).to_linear(srgb);
+        let dst: [f32; 4] = self.to_linear(srgb);
         let src: [f32; 4] = color.to_linear(srgb);
         let alpha = dst[3] * (1. - src[3]) + src[3];
         if alpha < 1. / 255. {
@@ -194,7 +195,7 @@ impl Color {
     pub fn mix(&self, color: Color, t: f32, srgb: bool) -> Color {
         if srgb {
             let color1 = self;
-            let color2 = &color;
+            let color2 = color;
             let l1 = color1.to_linear(true);
             let l2 = color2.to_linear(true);
             let v = [l2[0] - l1[0], l2[1] - l1[1], l2[2] - l1[2]];

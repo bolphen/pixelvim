@@ -148,10 +148,16 @@ impl Graphics {
             .or_insert_with(|| self.internal.new_tex());
         self.internal.update_tex(tex.id, width, height, Some(data));
     }
-    pub fn draw_rect_outline_fancy(&mut self, rect: Rect, b: f32, color: Option<Color>) {
+    pub fn draw_rect_outline_fancy(
+        &mut self,
+        rect: Rect,
+        b: f32,
+        color1: Option<Color>,
+        color2: Option<Color>,
+    ) {
         let (x, y, w, h) = rect.get();
-        self.draw_rect_outline(rect, 3. * b, Color::BLACK.into());
-        self.draw_rect_outline(Rect::new(x - b, y - b, w + 2. * b, h + 2. * b), b, color);
+        self.draw_rect_outline(rect, 3. * b, color1);
+        self.draw_rect_outline(Rect::new(x - b, y - b, w + 2. * b, h + 2. * b), b, color2);
     }
     pub fn draw_rect_filled(&mut self, rect: Rect, color: Option<Color>) {
         self.internal.draw_tex_to_screen(&self.blank, rect, color);

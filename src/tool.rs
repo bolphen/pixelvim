@@ -37,9 +37,9 @@ pub fn resize(image: &Image, width: usize, height: usize) -> Image {
     let y_factor = image.height() as f32 / height as f32;
     let mut new = Image::new_with(width, height, (0, 0, 0, 0).into());
     for x in 0..width as i32 {
-        let xx = (x as f32 * x_factor).floor() as i32;
+        let xx = ((x as f32 + 0.5) * x_factor - 0.5).round() as i32;
         for y in 0..height as i32 {
-            let yy = (y as f32 * y_factor).floor() as i32;
+            let yy = ((y as f32 + 0.5) * y_factor - 0.5).round() as i32;
             *new.get_unchecked_mut(x, y) = *image.get_unchecked(xx, yy);
         }
     }
@@ -126,6 +126,52 @@ pub fn rect(
     outline: bool,
 ) -> Option<Image> {
     let diff: Vec<_> = crate::algo::rect(image, bounds, symmetry, outline)
+        .into_iter()
+        .filter(|(x, y)| {
+            image.is_in_bound(*x, *y) && (selection.is_empty() || selection.contains(&(*x, *y)))
+        })
+        .collect();
+    (!diff.is_empty()).then(|| {
+        let mut new = image.clone();
+        for (x, y) in diff {
+            color_mode.apply(new.get_unchecked_mut(x, y));
+        }
+        new
+    })
+}
+
+pub fn ellipse(
+    image: &Image,
+    selection: &Selection,
+    bounds: ((i32, i32), (i32, i32)),
+    color_mode: ColorMode,
+    symmetry: Symmetry,
+    outline: bool,
+) -> Option<Image> {
+    let diff: Vec<_> = crate::algo::ellipse(image, bounds, symmetry, outline)
+        .into_iter()
+        .filter(|(x, y)| {
+            image.is_in_bound(*x, *y) && (selection.is_empty() || selection.contains(&(*x, *y)))
+        })
+        .collect();
+    (!diff.is_empty()).then(|| {
+        let mut new = image.clone();
+        for (x, y) in diff {
+            color_mode.apply(new.get_unchecked_mut(x, y));
+        }
+        new
+    })
+}
+
+pub fn line(
+    image: &Image,
+    selection: &Selection,
+    bounds: ((i32, i32), (i32, i32)),
+    color_mode: ColorMode,
+    symmetry: Symmetry,
+    brush: &Brush,
+) -> Option<Image> {
+    let diff: Vec<_> = crate::algo::line(image, bounds, symmetry, brush)
         .into_iter()
         .filter(|(x, y)| {
             image.is_in_bound(*x, *y) && (selection.is_empty() || selection.contains(&(*x, *y)))

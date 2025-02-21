@@ -19,7 +19,7 @@ asefile = "*"
 dirs = "*"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-mlua = { version = "*", default-features = false, features = ["lua54", "send", "vendored"], optional = true }
+mlua = { version = "*", default-features = false, features = ["lua51", "send", "vendored"], optional = true }
 
 [profile.dev]
 opt-level = 1

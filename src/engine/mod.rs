@@ -1,3 +1,4 @@
+mod action;
 mod buffer;
 mod command;
 mod history;
@@ -13,8 +14,7 @@ use std::path::PathBuf;
 use crate::algo::{Brush, Selection};
 use crate::color::Color;
 use crate::command::{Command, Commands, Modifier, Setting, Settings, Toggleable};
-use crate::error::EditError;
-use crate::error::Error;
+use crate::error::{EditError, Error};
 use crate::image::Image;
 use crate::input::Input;
 use crate::mapping::{Action, Key, KeyMap};
@@ -170,8 +170,37 @@ impl Message {
     }
 }
 
+enum Overlay {
+    Command(Input),
+    Help(TextViewer),
+    #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
+    Running(crate::lua::LuaHandle, std::sync::mpsc::Sender<bool>),
+    None,
+}
+
+impl Overlay {
+    fn is_none(&self) -> bool {
+        matches!(self, Overlay::None)
+    }
+    #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
+    fn take_handle(&mut self) -> Option<crate::lua::LuaHandle> {
+        if let Overlay::Running(..) = self {
+            let mut mode = Overlay::None;
+            std::mem::swap(self, &mut mode);
+            Some(if let Overlay::Running(handle, ..) = mode {
+                handle
+            } else {
+                unreachable!()
+            })
+        } else {
+            None
+        }
+    }
+}
+
 pub struct Engine {
     mode: Mode,
+    overlay: Overlay,
     buffers: Vec<Buffer>,
     buffer_count: usize,
     current: usize,
@@ -234,11 +263,6 @@ enum Mode {
         message: Option<Message>,
         modifier: Option<Modifier>,
     },
-    Command(Input, bool),
-    Help(TextViewer),
-    #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-    Running(crate::lua::LuaHandle, std::sync::mpsc::Sender<bool>),
-    _Insert,
 }
 impl Mode {
     pub fn normal(message: Option<Message>) -> Self {
@@ -253,9 +277,6 @@ impl Mode {
             message,
             modifier: None,
         }
-    }
-    pub fn command() -> Self {
-        Mode::Command(Input::new(""), true)
     }
     pub fn paste(
         image: Image,
@@ -281,12 +302,18 @@ impl Mode {
             }),
         }
     }
-    fn take_modifier(&mut self) -> Option<Modifier> {
-        if let Mode::Normal { modifier, .. } | Mode::Visual { modifier, .. } = self {
-            modifier.take()
-        } else {
-            None
+    fn modifier(&mut self) -> &mut Option<Modifier> {
+        match self {
+            Mode::Normal { modifier, .. } | Mode::Visual { modifier, .. } => modifier,
         }
+    }
+    fn _message(&mut self) -> &mut Option<Message> {
+        match self {
+            Mode::Normal { message, .. } | Mode::Visual { message, .. } => message,
+        }
+    }
+    fn take_modifier(&mut self) -> Option<Modifier> {
+        self.modifier().take()
     }
     fn take_paste_info(&mut self) -> Option<PrePasteData> {
         if let Mode::Normal { paste_info, .. } = self {
@@ -295,24 +322,8 @@ impl Mode {
             None
         }
     }
-    #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-    fn take_handle(&mut self) -> Option<crate::lua::LuaHandle> {
-        if let Mode::Running(..) = self {
-            let mut mode = Mode::normal(None);
-            std::mem::swap(self, &mut mode);
-            Some(if let Mode::Running(handle, ..) = mode {
-                handle
-            } else {
-                unreachable!()
-            })
-        } else {
-            None
-        }
-    }
     fn set_modifier(&mut self, new_modifier: Option<Modifier>) {
-        if let Mode::Normal { modifier, .. } | Mode::Visual { modifier, .. } = self {
-            *modifier = new_modifier;
-        }
+        *self.modifier() = new_modifier
     }
     fn is_normal(&self) -> bool {
         matches!(self, Mode::Normal { .. })
@@ -342,14 +353,10 @@ impl Mode {
         self.set_message(Message::warning(msg));
     }
     fn set_message(&mut self, msg: Message) {
-        if let Mode::Normal { message, .. } | Mode::Visual { message, .. } = self {
-            *message = Some(msg);
-        }
+        *self._message() = Some(msg);
     }
     fn clear_message(&mut self) {
-        if let Mode::Normal { message, .. } | Mode::Visual { message, .. } = self {
-            *message = None;
-        }
+        *self._message() = None;
     }
 }
 impl Engine {
@@ -357,6 +364,7 @@ impl Engine {
         let srgb = true;
         Engine {
             mode: Mode::normal(None),
+            overlay: Overlay::None,
             buffers: Vec::new(),
             buffer_count: 0,
             current: 0,
@@ -419,7 +427,7 @@ impl Engine {
         lua.init(buffer)?;
         lua.set_modifier(get_modifier(modifier))?;
         let (handle, interrupt) = lua.exec(script);
-        self.mode = Mode::Running(handle, interrupt);
+        self.overlay = Overlay::Running(handle, interrupt);
         Ok(())
     }
     #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
@@ -802,7 +810,6 @@ impl Engine {
                     }
                 }
             }
-            _ => (),
         }
         if matches!(self.tool, Tool::Brush { .. }) && self.tracker.pixel_perfect {
             effects.push("pixel perfect")
@@ -817,27 +824,35 @@ impl Engine {
             .get_mut(self.current)
             .ok_or("No active buffer".into())
     }
-    pub fn key_up_event(&mut self, keycode: KeyCode, _keymods: KeyMods) {
-        if keycode == KeyCode::LeftAlt || keycode == KeyCode::RightAlt {
-            self.picker = false;
+    pub fn key_up_event(&mut self, keycode: KeyCode, keymods: KeyMods) {
+        if let Overlay::None = &mut self.overlay {
+            let key = Key::new(keycode, keymods.ctrl, keymods.shift);
+            let actions = if self.mode.is_visual() {
+                self.key_map.get_visual(key).1
+            } else {
+                self.key_map.get_normal(key).1
+            }
+            .to_vec();
+            for action in actions {
+                self.do_action(action, false);
+            }
         }
     }
     pub fn key_down_event(&mut self, keycode: KeyCode, keymods: KeyMods, repeat: bool) {
-        #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-        if let Mode::Running(_, interrupt) = &mut self.mode {
-            // handle interrupt signal
-            if let (KeyCode::C, true, false) = (keycode, keymods.ctrl, keymods.shift) {
-                let _ = interrupt.send(true);
-                self.mode.reset(Some(Message::warning("Script cancelled")));
-            }
-            // otherwise just ignore
-            return;
-        }
         self.mode.clear_message();
-        if let Mode::Help(view) = &mut self.mode {
-            match (keycode, keymods.ctrl, keymods.shift) {
+        match &mut self.overlay {
+            #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
+            Overlay::Running(_, interrupt) => {
+                // handle interrupt signal
+                if let (KeyCode::C, true, false) = (keycode, keymods.ctrl, keymods.shift) {
+                    let _ = interrupt.send(true);
+                    self.overlay = Overlay::None;
+                    self.mode.warning("Script cancelled");
+                }
+            }
+            Overlay::Help(view) => match (keycode, keymods.ctrl, keymods.shift) {
                 (KeyCode::Escape, false, false) => {
-                    self.mode.set_to_normal(None);
+                    self.overlay = Overlay::None;
                 }
                 (KeyCode::J, false, false) | (KeyCode::Down, false, false) => {
                     view.scroll(1);
@@ -858,524 +873,161 @@ impl Engine {
                     view.scroll_to_end();
                 }
                 _ => (),
-            }
-            return;
-        }
-        if let Mode::Command(input, _) = &mut self.mode {
-            let data = crate::input::CompletionData {
-                buffers: self.buffers.iter().map(|b| b.display_name()).collect(),
-                palette: &self.palette,
-                commands: &self.commands,
-                settings: &self.settings,
-            };
-            match (keycode, keymods.ctrl, keymods.shift) {
-                (KeyCode::Enter, false, false) => {
-                    if self.history.last().is_none_or(|h| h != input.text()) {
-                        self.history.push(input.text().into());
+            },
+            Overlay::Command(input) => {
+                let data = crate::input::CompletionData {
+                    buffers: self.buffers.iter().map(|b| b.display_name()).collect(),
+                    palette: &self.palette,
+                    commands: &self.commands,
+                    settings: &self.settings,
+                };
+                match (keycode, keymods.ctrl, keymods.shift) {
+                    (KeyCode::Enter, false, false) => {
+                        if self.history.last().is_none_or(|h| h != input.text()) {
+                            self.history.push(input.text().into());
+                        }
+                        let parsed_cmd = self.commands.parse(input.text());
+                        self.overlay = Overlay::None;
+                        if let Err(e) = parsed_cmd.and_then(|cmd| self.do_command(cmd)) {
+                            self.mode.error(&e);
+                        }
                     }
-                    let parsed_cmd = self.commands.parse(input.text());
-                    self.mode.set_to_normal(None);
-                    if let Err(e) = parsed_cmd.and_then(|cmd| self.do_command(cmd)) {
-                        self.mode.error(&e);
+                    (KeyCode::Escape, false, false) | (KeyCode::C, true, false) => {
+                        self.overlay = Overlay::None;
                     }
-                }
-                (KeyCode::Escape, false, false) | (KeyCode::C, true, false) => {
-                    self.mode.set_to_normal(None);
-                }
-                (KeyCode::V, true, true) => {
-                    if let Some(c) = miniquad::window::clipboard_get() {
-                        input.insert_str(c.as_str());
+                    (KeyCode::V, true, true) => {
+                        if let Some(c) = miniquad::window::clipboard_get() {
+                            input.insert_str(c.as_str());
+                        }
                     }
-                }
-                (KeyCode::Backspace, _, _) => {
-                    if input.len() == 0 && !repeat {
-                        self.mode.set_to_normal(None);
-                    } else {
-                        input.backspace();
+                    (KeyCode::Backspace, _, _) => {
+                        if input.len() == 0 && !repeat {
+                            self.overlay = Overlay::None;
+                        } else {
+                            input.backspace();
+                        }
                     }
-                }
-                (KeyCode::Delete, false, false) => {
-                    input.delete();
-                }
-                (KeyCode::A, true, false) | (KeyCode::Home, false, false) => {
-                    input.home();
-                }
-                (KeyCode::E, true, false) | (KeyCode::End, false, false) => {
-                    input.end();
-                }
-                (KeyCode::Up, false, false) => {
-                    if input.completions.is_some() {
-                        input.prev_completion(&data);
-                    } else {
-                        let h: Vec<_> = self
-                            .history
-                            .iter()
-                            .filter(|h| h.starts_with(&input.text()[..input.cursor()]))
-                            .map(|h| crate::input::Entry(h.clone(), None, None))
-                            .collect();
-                        if !h.is_empty() {
-                            input.completions = Some(((0..input.cursor()), 0, h));
+                    (KeyCode::Delete, false, false) => {
+                        input.delete();
+                    }
+                    (KeyCode::A, true, false) | (KeyCode::Home, false, false) => {
+                        input.home();
+                    }
+                    (KeyCode::E, true, false) | (KeyCode::End, false, false) => {
+                        input.end();
+                    }
+                    (KeyCode::Up, false, false) => {
+                        if input.completions.is_some() {
                             input.prev_completion(&data);
+                        } else {
+                            let h: Vec<_> = self
+                                .history
+                                .iter()
+                                .filter(|h| h.starts_with(&input.text()[..input.cursor()]))
+                                .map(|h| crate::input::Entry(h.clone(), None, None))
+                                .collect();
+                            if !h.is_empty() {
+                                input.completions = Some(((0..input.cursor()), 0, h));
+                                input.prev_completion(&data);
+                            }
                         }
                     }
-                }
-                (KeyCode::Down, false, false) => {
-                    if input.completions.is_some() {
+                    (KeyCode::Down, false, false) => {
+                        if input.completions.is_some() {
+                            input.next_completion(&data);
+                        }
+                    }
+                    (KeyCode::B, true, false) | (KeyCode::Left, false, false) => {
+                        input.left();
+                    }
+                    (KeyCode::F, true, false) | (KeyCode::Right, false, false) => {
+                        input.right();
+                    }
+                    (KeyCode::K, true, false) => {
+                        input.kill();
+                    }
+                    (KeyCode::Y, true, false) => {
+                        input.yank();
+                    }
+                    (KeyCode::Tab, false, true) => {
+                        input.prev_completion(&data);
+                    }
+                    (KeyCode::Tab, false, false) => {
                         input.next_completion(&data);
-                    }
-                }
-                (KeyCode::B, true, false) | (KeyCode::Left, false, false) => {
-                    input.left();
-                }
-                (KeyCode::F, true, false) | (KeyCode::Right, false, false) => {
-                    input.right();
-                }
-                (KeyCode::K, true, false) => {
-                    input.kill();
-                }
-                (KeyCode::Y, true, false) => {
-                    input.yank();
-                }
-                (KeyCode::Tab, false, true) => {
-                    input.prev_completion(&data);
-                }
-                (KeyCode::Tab, false, false) => {
-                    input.next_completion(&data);
-                }
-                _ => (),
-            }
-            return;
-        }
-        if keycode == KeyCode::LeftAlt || keycode == KeyCode::RightAlt {
-            if !self.tracker.is_in_use() {
-                self.picker = true;
-            }
-        } else {
-            let key = Key::new(keycode, keymods.ctrl, keymods.shift);
-            let actions = if self.mode.is_visual() {
-                self.key_map.get_visual(key)
-            } else {
-                self.key_map.get_normal(key)
-            }
-            .to_vec();
-            for action in &actions {
-                match (action, self.buffers.get_mut(self.current), repeat) {
-                    (
-                        Action::Normal
-                        | Action::NormalBlend
-                        | Action::NormalErase
-                        | Action::NormalReplace
-                        | Action::NormalToggle,
-                        buffer,
-                        false,
-                    ) => {
-                        if self.mode.is_visual() {
-                            self.mode = Mode::normal(None);
-                        }
-                        if let Some(b) = buffer {
-                            b.clear_temporary()
-                        }
-                        self.draw_mode.0 = match action {
-                            Action::Normal => self.draw_mode.0,
-                            Action::NormalBlend => NormalMode::Blend(self.srgb),
-                            Action::NormalErase => NormalMode::Erase,
-                            Action::NormalReplace => NormalMode::Replace,
-                            Action::NormalToggle => self.draw_mode.0.toggle(
-                                self.color.3 != 255 || matches!(self.tool, Tool::Move),
-                                self.srgb,
-                            ),
-                            _ => unreachable!(),
-                        };
-                    }
-                    (
-                        Action::Visual
-                        | Action::VisualAdd
-                        | Action::VisualSub
-                        | Action::VisualToggle,
-                        buffer,
-                        false,
-                    ) => {
-                        if self.mode.is_normal() {
-                            self.mode = Mode::visual(None);
-                        }
-                        if let Some(b) = buffer {
-                            b.clear_temporary()
-                        }
-                        self.draw_mode.1 = match action {
-                            Action::Visual => self.draw_mode.1,
-                            Action::VisualAdd => VisualMode::Add,
-                            Action::VisualSub => VisualMode::Sub,
-                            Action::VisualToggle => self.draw_mode.1.toggle(),
-                            _ => unreachable!(),
-                        };
-                    }
-                    (Action::PixelPerfect, buffer, false) => {
-                        self.tracker.pixel_perfect = !self.tracker.pixel_perfect;
-                        if let Some(b) = buffer {
-                            b.clear_temporary()
-                        }
-                    }
-                    (
-                        Action::Brush
-                        | Action::BrushFilled
-                        | Action::Flood
-                        | Action::FloodAll
-                        | Action::RectFilled
-                        | Action::RectOutline
-                        | Action::Move,
-                        buffer,
-                        false,
-                    ) => {
-                        let tool = match action {
-                            Action::Brush => Tool::Brush(true),
-                            Action::BrushFilled => Tool::Brush(false),
-                            Action::Flood => Tool::Flood(false),
-                            Action::FloodAll => Tool::Flood(true),
-                            Action::RectFilled => Tool::Rect(false),
-                            Action::RectOutline => Tool::Rect(true),
-                            Action::Move => Tool::Move,
-                            _ => unreachable!(),
-                        };
-                        if self.tool.set(tool) {
-                            if let Some(b) = buffer {
-                                b.clear_temporary()
-                            }
-                            self.mode.reset(Some(Message::normal(&format!(
-                                "Change tool to {}",
-                                self.tool.string_short()
-                            ))));
-                        }
-                    }
-                    (
-                        Action::BrushToggle | Action::FloodToggle | Action::RectToggle,
-                        buffer,
-                        false,
-                    ) => {
-                        let tool = match action {
-                            Action::BrushToggle => Tool::Brush(true),
-                            Action::FloodToggle => Tool::Flood(false),
-                            Action::RectToggle => Tool::Rect(false),
-                            _ => unreachable!(),
-                        };
-                        self.tool.set_or_toggle(tool);
-                        if let Some(b) = buffer {
-                            b.clear_temporary()
-                        }
-                        self.mode.reset(Some(Message::normal(&format!(
-                            "Change tool to {}",
-                            self.tool.string_short()
-                        ))));
-                    }
-                    (Action::Cancel, buffer, false) => {
-                        self.mode.take_modifier();
-                        if let Some(buffer) = buffer {
-                            if self.tracker.is_in_use() {
-                                self.tracker.stop();
-                                buffer.clear_temporary();
-                                if self.mode.is_visual() {
-                                    self.mode.set_message(Message::normal(&format!(
-                                        "Cancelled {} selection",
-                                        self.tool.string_short()
-                                    )));
-                                } else {
-                                    self.mode.set_message(Message::normal(&format!(
-                                        "Cancelled {}",
-                                        self.tool.string_short()
-                                    )));
-                                }
-                                return;
-                            }
-                        }
                     }
                     _ => (),
                 }
-                if !self.tracker.is_in_use() {
-                    match (action, self.buffers.get_mut(self.current), repeat) {
-                        (Action::Command, _, false) => {
-                            self.mode = Mode::command();
-                            return;
-                        }
-                        (Action::Go, _, false) => {
-                            let modifier = self.mode.take_modifier();
-                            self.mode
-                                .set_modifier(Some(Modifier::Go(get_modifier(modifier))));
-                        }
-                        (Action::TabFront, _, false) => {
-                            if let Some(Modifier::Go(n)) = self.mode.take_modifier() {
-                                let len = self.buffers.len();
-                                if len > 0 {
-                                    if let Some(n) = n {
-                                        let n = n as usize;
-                                        self.current = (n + len - 1) % len;
-                                    } else {
-                                        self.current = (self.current + 1) % len;
-                                    }
-                                    self.mode.set_to_normal(None);
-                                }
-                            }
-                        }
-                        (Action::TabBack, _, false) => {
-                            if let Some(Modifier::Go(n)) = self.mode.take_modifier() {
-                                let len = self.buffers.len();
-                                if len > 0 {
-                                    if let Some(n) = n {
-                                        let n = n as usize;
-                                        self.current = (len - n % len) % len;
-                                    } else {
-                                        self.current = (self.current + len - 1) % len;
-                                    }
-                                    self.mode.set_to_normal(None);
-                                }
-                            }
-                        }
-                        (
-                            Action::Up | Action::Down | Action::Left | Action::Right,
-                            Some(buffer),
-                            _,
-                        ) => {
-                            let v = get_modifier(self.mode.take_modifier()).unwrap_or(1);
-                            let dir = match action {
-                                Action::Right => (v, 0),
-                                Action::Left => (-v, 0),
-                                Action::Up => (0, -v),
-                                Action::Down => (0, v),
-                                _ => unreachable!(),
-                            };
-                            if dir != (0, 0) {
-                                if self.mode.is_visual() {
-                                    if let Some(msg) = self.tool.visual_move(buffer, dir, repeat) {
-                                        self.mode.set_message(msg);
-                                    }
-                                } else if let Mode::Normal {
-                                    paste_info:
-                                        Some(PrePasteData {
-                                            register,
-                                            offset,
-                                            reg_idx,
-                                            img_idx,
-                                            ..
-                                        }),
-                                    ..
-                                } = &mut self.mode
-                                {
-                                    buffer.animation.paused = true;
-                                    offset.0 += dir.0;
-                                    offset.1 += dir.1;
-                                    tool::paste(
-                                        register,
-                                        if let Some(reg_idx) = reg_idx {
-                                            if repeat {
-                                                PasteFrom::RegIndexAmend(*reg_idx)
-                                            } else {
-                                                PasteFrom::RegIndex(*reg_idx)
-                                            }
-                                        } else {
-                                            PasteFrom::Register(register)
-                                        },
-                                        buffer,
-                                        Some(*img_idx),
-                                        Some(*offset),
-                                        self.draw_mode.0,
-                                    );
-                                    self.mode.set_message(Message::normal("Used move"));
-                                } else {
-                                    match self.tool {
-                                        Tool::Move => {
-                                            if let Some(r) =
-                                                Register::new(buffer.image(), buffer.selection())
-                                            {
-                                                buffer.animation.paused = true;
-                                                let cut = crate::tool::cut(
-                                                    buffer.image(),
-                                                    buffer.selection(),
-                                                );
-                                                let img_idx = buffer.session.insert_image(&cut);
-                                                let reg_idx = tool::paste(
-                                                    &r,
-                                                    PasteFrom::Register(&r),
-                                                    buffer,
-                                                    Some(img_idx),
-                                                    Some(dir),
-                                                    self.draw_mode.0,
-                                                )
-                                                .2;
-                                                self.mode = Mode::paste(
-                                                    cut,
-                                                    img_idx,
-                                                    Some(Message::normal("Used move")),
-                                                    r,
-                                                    Some(reg_idx),
-                                                    Some(dir),
-                                                    buffer.current_layer_id(),
-                                                    buffer.current_frame_id(),
-                                                );
-                                            } else {
-                                                if !buffer.edit_all {
-                                                    buffer.animation.paused = true;
-                                                }
-                                                buffer.edit_infallible(
-                                                    "move",
-                                                    |i, _s, _sym| crate::tool::r#move(i, dir),
-                                                    repeat,
-                                                );
-                                                self.mode.set_message(Message::normal("Used move"));
-                                            }
-                                        }
-                                        _ => {
-                                            buffer.move_cursor(dir);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        (Action::Paste, Some(buffer), false) => {
-                            if let Some(r) = self.registers.get(&'"') {
-                                let (image, img_idx, reg_idx) = tool::paste(
-                                    r,
-                                    PasteFrom::Register(r),
-                                    buffer,
-                                    None,
-                                    None,
-                                    self.draw_mode.0,
-                                );
-                                self.tool = Tool::Move;
-                                self.mode = Mode::paste(
-                                    image,
-                                    img_idx,
-                                    Some(Message::normal("Pasted from register \"\"")),
-                                    r.clone(),
-                                    Some(reg_idx),
-                                    None,
-                                    buffer.current_layer_id(),
-                                    buffer.current_frame_id(),
-                                );
-                            } else {
-                                self.mode.error("Register \"\" is empty");
-                            }
-                        }
-                        (Action::Yank, Some(buffer), false) => {
-                            if let Mode::Normal {
-                                paste_info: Some(paste_info),
-                                ..
-                            } = &self.mode
-                            {
-                                let mut register = paste_info.register.clone();
-                                register.offset.0 += paste_info.offset.0;
-                                register.offset.1 += paste_info.offset.1;
-                                self.registers.insert('"', register);
-                                self.mode
-                                    .set_message(Message::normal("Yanked to register \"\""));
-                            } else if let Some(r) =
-                                Register::new(buffer.image(), buffer.selection())
-                            {
-                                self.registers.insert('"', r);
-                                self.mode
-                                    .set_message(Message::normal("Yanked to register \"\""));
-                            } else if let Some(cursor) = buffer.cursor() {
-                                buffer.picker(cursor).map(|c| self.color = c);
-                            }
-                        }
-                        (Action::Cut, Some(buffer), false) => {
-                            let paste_info = self.mode.take_paste_info();
-                            if let Some(paste_info) = paste_info {
-                                let mut register = paste_info.register;
-                                register.offset.0 += paste_info.offset.0;
-                                register.offset.1 += paste_info.offset.1;
-                                self.registers.insert('"', register);
-                                buffer.edit_infallible(
-                                    "cut",
-                                    |_i, _s, _sym| paste_info.image,
-                                    false,
-                                );
-                                buffer.amend_selection(|_i, _s, _sym| Selection::new());
-                                self.mode
-                                    .set_to_normal(Some(Message::normal("Cut to register \"\"")));
-                            } else if let Some(r) =
-                                Register::new(buffer.image(), buffer.selection())
-                            {
-                                self.registers.insert('"', r);
-                                buffer
-                                    .edit(
-                                        Some("cut"),
-                                        |i, s, _sym| Some(crate::tool::cut(i, s)),
-                                        false,
-                                    )
-                                    .expect("infallible");
-                                buffer.amend_selection(|_i, _s, _sym| Selection::new());
-                                self.mode
-                                    .set_to_normal(Some(Message::normal("Cut to register \"\"")));
-                            }
-                        }
-                        (Action::Delete, Some(buffer), false) => {
-                            if Register::new(buffer.image(), buffer.selection()).is_some() {
-                                buffer.edit_infallible(
-                                    "cut",
-                                    |i, s, _sym| crate::tool::cut(i, s),
-                                    false,
-                                );
-                                buffer.amend_selection(|_i, _s, _sym| Selection::new());
-                                self.mode.set_to_normal(Some(Message::normal("Delete")));
-                            }
-                        }
-                        (Action::DoCommand(cmd), _, _) => {
-                            let parsed_cmd = self.commands.parse(cmd);
-                            if let Ok(cmd) = parsed_cmd {
-                                if let Err(e) = {
-                                    let modifier = self.mode.take_modifier();
-                                    self.do_command(cmd.modify(modifier))
-                                } {
-                                    self.mode.error(&e);
-                                    return;
-                                }
-                            }
-                        }
-                        _ => (),
-                    }
+            }
+            Overlay::None => {
+                let key = Key::new(keycode, keymods.ctrl, keymods.shift);
+                let actions = if self.mode.is_visual() {
+                    self.key_map.get_visual(key).0
+                } else {
+                    self.key_map.get_normal(key).0
+                }
+                .to_vec();
+                for action in actions {
+                    self.do_action(action, repeat);
                 }
             }
         }
     }
-    pub fn char_event(&mut self, char: char, keymods: KeyMods, _repeat: bool) {
-        match &mut self.mode {
-            // on certain platforms char_event is fired after key_down_event
-            // so this hack catches and removes the extra ':' char when entering command mode
-            Mode::Command(input, just_entered) => {
-                if (!*just_entered || char != ':')
-                    && !keymods.ctrl
+    pub fn char_event(&mut self, char: char, keymods: KeyMods, repeat: bool) {
+        match &mut self.overlay {
+            Overlay::Command(input) => {
+                if !keymods.ctrl
                     && (char.is_alphanumeric() || (char.is_ascii() && !char.is_ascii_control()))
                 {
                     input.insert(char);
                 }
-                *just_entered = false;
             }
-            Mode::Normal { modifier, .. } | Mode::Visual { modifier, .. } => {
-                if !self.tracker.is_in_use() && char.is_ascii_digit() {
-                    let d = char as i32 - '0' as i32;
-                    if let Some(m) = modifier.take() {
-                        *modifier = m.push_digit(d);
-                    } else {
-                        *modifier = Some(Modifier::Num(d));
+            #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
+            Overlay::Running(..) => (),
+            Overlay::Help(..) => {
+                let actions = if self.mode.is_visual() {
+                    self.key_map.get_visual(char).0
+                } else {
+                    self.key_map.get_normal(char).0
+                }
+                .to_vec();
+                for action in actions {
+                    if matches!(action, Action::Command) {
+                        self.do_action(action, repeat);
                     }
                 }
             }
-            Mode::Help(..) => {
-                // hard-coded
-                if char == ':' {
-                    self.mode = Mode::command();
+            Overlay::None => {
+                if !self.tracker.is_mouse_in_use() && char.is_ascii_digit() {
+                    let d = char as i32 - '0' as i32;
+                    if let Some(m) = self.mode.take_modifier() {
+                        self.mode.set_modifier(m.push_digit(d));
+                    } else {
+                        self.mode.set_modifier(Some(Modifier::Num(d)));
+                    }
+                }
+                let actions = if self.mode.is_visual() {
+                    self.key_map.get_visual(char).0
+                } else {
+                    self.key_map.get_normal(char).0
+                }
+                .to_vec();
+                for action in actions {
+                    self.do_action(action, repeat);
                 }
             }
-            _ => {}
         }
     }
     pub fn mouse_wheel_event(&mut self, _x: f32, y: f32) {
         if y != 0. {
-            match &mut self.mode {
-                Mode::Help(view) => {
+            match &mut self.overlay {
+                Overlay::Help(view) => {
                     view.scroll(-y.signum() as i32);
                 }
                 _ => {
                     if let Some(buffer) = self.buffers.get_mut(self.current) {
-                        buffer.set_cursor(self.mouse);
+                        if !self.tracker.is_keyboard_in_use() {
+                            buffer.set_cursor(self.mouse);
+                        }
                         buffer.zoom_at(1. + y.clamp(-1., 1.) / 10., Some(self.mouse));
                     }
                 }
@@ -1428,143 +1080,143 @@ impl Engine {
         self.mode.clear_message();
         if matches!(button, MouseButton::Left) {
             let mut used = false;
-            match self.mode {
-                Mode::Command(..) => {
-                    self.mode.set_to_normal(None);
-                    return;
-                }
-                #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-                Mode::Running(..) => {
-                    return;
-                }
-                _ => (),
-            }
-            // capture ui
-            if !used && self.mouse_on_tool() {
-                match self.tool {
-                    Tool::Brush(..) => {
-                        self.mode = Mode::Command(Input::new("set brush/shape="), true)
-                    }
-                    Tool::Flood(..) => {
-                        self.mode = Mode::Command(Input::new("set flood/tolerance="), true)
-                    }
-                    _ => (),
-                }
-                used = true;
-            }
-            if !used && self.mouse_on_main_color() {
-                self.show_palette = !self.show_palette;
-                used = true;
-            }
-            if !used {
-                self.mouse_on_layer().map(|(l, b)| {
-                    let buffer = self.buffers.get_mut(self.current).expect("");
-                    match b {
-                        ui::LayerClick::Toggle => buffer.toggle_visibility(l, None),
-                        ui::LayerClick::Frame(frame) => {
-                            buffer.session.current_layer = l;
-                            buffer.set_frame(frame);
+            match self.overlay {
+                Overlay::Command(..) => self.overlay = Overlay::None,
+                Overlay::None => {
+                    // capture ui
+                    if !used && self.mouse_on_tool() {
+                        match self.tool {
+                            Tool::Brush(..) | Tool::Line => {
+                                self.overlay = Overlay::Command(Input::new("set brush/shape="));
+                            }
+                            Tool::Flood(..) => {
+                                self.overlay = Overlay::Command(Input::new("set flood/tolerance="));
+                            }
+                            _ => (),
                         }
-                        _ => {
-                            buffer.session.current_layer = l;
-                        }
+                        used = true;
                     }
-                    used = true;
-                });
-            }
-            if !used {
-                self.mouse_on_palette().map(|(c, _)| {
-                    self.color = c;
-                    used = true;
-                });
-            }
-            if let Some(buffer) = self.buffers.get_mut(self.current) {
-                let new = buffer.coordinate(self.mouse);
-                if !used {
-                    if self.picker {
-                        buffer.picker(new).map(|c| self.color = c);
-                    } else {
-                        self.tracker.start(new);
+                    if !used && self.mouse_on_main_color() {
+                        self.show_palette = !self.show_palette;
+                        used = true;
                     }
-                }
-            }
-        }
-    }
-    pub fn mouse_button_up(&mut self, button: MouseButton) {
-        if matches!(button, MouseButton::Left) {
-            if let Some(buffer) = self.buffers.get_mut(self.current) {
-                match &mut self.mode {
-                    Mode::Visual { message, modifier } => {
-                        *message = self.tool.visual_use(
-                            &self.tracker,
-                            buffer,
-                            self.draw_mode.1,
-                            modifier.take(),
-                            &self.tool_setting,
-                        )
+                    if !used {
+                        self.mouse_on_layer().map(|(l, b)| {
+                            let buffer = self.buffers.get_mut(self.current).expect("");
+                            match b {
+                                ui::LayerClick::Toggle => buffer.toggle_visibility(l, None),
+                                ui::LayerClick::Frame(frame) => {
+                                    buffer.session.current_layer = l;
+                                    buffer.set_frame(frame);
+                                }
+                                _ => {
+                                    buffer.session.current_layer = l;
+                                }
+                            }
+                            used = true;
+                        });
                     }
-                    Mode::Normal {
-                        message,
-                        paste_info: None,
-                        modifier,
-                    } => {
-                        modifier.take();
-                        if !(matches!(self.tool, Tool::Move)
-                            && self.tracker.get_dir() == Some((0, 0)))
-                            && buffer.commit_temporary(self.tool.string_short()).is_some()
-                        {
-                            *message = Some(self.tool.normal_message());
-                        };
+                    if !used {
+                        self.mouse_on_palette().map(|(c, _)| {
+                            self.color = c;
+                            used = true;
+                        });
                     }
-                    Mode::Normal {
-                        message,
-                        paste_info:
-                            Some(PrePasteData {
-                                register,
-                                reg_idx,
-                                img_idx,
-                                offset,
-                                ..
-                            }),
-                        ..
-                    } => {
-                        if let Some(dir) = self.tracker.get_dir() {
-                            if buffer.temporary_images.len() > 1 {
-                                buffer.commit_temporary("move");
-                                buffer.amend_selection(|_i, s, _sym| crate::algo::r#move(s, dir));
-                                *message = Some(Message::normal("Used move"));
-                            } else if dir != (0, 0) {
-                                offset.0 += dir.0;
-                                offset.1 += dir.1;
-                                tool::paste(
-                                    register,
-                                    if let Some(reg_idx) = reg_idx {
-                                        PasteFrom::RegIndex(*reg_idx)
-                                    } else {
-                                        PasteFrom::Register(register)
-                                    },
-                                    buffer,
-                                    Some(*img_idx),
-                                    Some(*offset),
-                                    self.draw_mode.0,
-                                );
-                                *message = Some(Message::normal("Used move"));
+                    if let Some(buffer) = self.buffers.get_mut(self.current) {
+                        let new = buffer.coordinate(self.mouse);
+                        if !used {
+                            if self.picker {
+                                buffer.picker(new).map(|c| self.color = c);
+                            } else if self.overlay.is_none() {
+                                if self.tracker.is_keyboard_in_use() {
+                                    self.commit();
+                                }
+                                self.tracker.start(new, tool::InputType::Mouse);
                             }
                         }
                     }
-
-                    _ => (),
                 }
-                buffer.clear_temporary();
-                self.tracker.stop();
+                _ => (),
             }
+        }
+    }
+    fn commit(&mut self) {
+        if let Some(buffer) = self.buffers.get_mut(self.current) {
+            match &mut self.mode {
+                Mode::Visual { message, modifier } => {
+                    *message = self.tool.visual_use(
+                        &self.tracker,
+                        buffer,
+                        self.draw_mode.1,
+                        modifier.take(),
+                        &self.tool_setting,
+                    )
+                }
+                Mode::Normal {
+                    message,
+                    paste_info: None,
+                    modifier,
+                } => {
+                    modifier.take();
+                    if !(matches!(self.tool, Tool::Move) && self.tracker.get_dir() == Some((0, 0)))
+                        && buffer.commit_temporary(self.tool.string_short()).is_some()
+                    {
+                        *message = Some(self.tool.normal_message());
+                    };
+                }
+                Mode::Normal {
+                    message,
+                    paste_info:
+                        Some(PrePasteData {
+                            register,
+                            reg_idx,
+                            img_idx,
+                            offset,
+                            ..
+                        }),
+                    ..
+                } => {
+                    if let Some(dir) = self.tracker.get_dir() {
+                        if buffer.temporary_images.len() > 1 {
+                            buffer.commit_temporary("move");
+                            buffer.amend_selection(|_i, s, _sym| crate::algo::r#move(s, dir));
+                            *message = Some(Message::normal("Used move"));
+                        } else if dir != (0, 0) {
+                            offset.0 += dir.0;
+                            offset.1 += dir.1;
+                            tool::paste(
+                                register,
+                                if let Some(reg_idx) = reg_idx {
+                                    PasteFrom::RegIndex(*reg_idx)
+                                } else {
+                                    PasteFrom::Register(register)
+                                },
+                                buffer,
+                                Some(*img_idx),
+                                Some(*offset),
+                                self.draw_mode.0,
+                            );
+                            *message = Some(Message::normal("Used move"));
+                        }
+                    }
+                }
+            }
+            buffer.clear_temporary();
+            self.tracker.stop();
+        }
+    }
+    pub fn mouse_button_up(&mut self, button: MouseButton) {
+        if matches!(button, MouseButton::Left) && self.tracker.is_mouse_in_use() {
+            self.commit();
         }
     }
     pub fn set_cursor(&mut self, mouse: (f32, f32)) {
         self.mouse = mouse;
         if let Some(buffer) = self.buffers.get_mut(self.current) {
-            self.tracker.track(buffer.coordinate(self.mouse));
-            buffer.set_cursor(self.mouse);
+            if !self.tracker.is_keyboard_in_use() {
+                buffer.set_cursor(self.mouse);
+                self.tracker.track_mouse(buffer.coordinate(self.mouse));
+            }
         }
     }
     pub fn update(&mut self) {
@@ -1572,15 +1224,35 @@ impl Engine {
         self.time.update();
         let mut running = false;
         #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-        if let Mode::Running(handle, _) = &mut self.mode {
+        if let Overlay::Running(handle, _) = &mut self.overlay {
             if handle.is_finished() {
-                let lua_handle = self.mode.take_handle().expect("");
+                let lua_handle = self.overlay.take_handle().expect("");
+                self.overlay = Overlay::None;
                 if let Err(e) = self.finish_script(lua_handle) {
-                    self.mode.reset(Some(Message::error(&e.to_string())));
+                    self.mode.error(&e.to_string());
                 }
             } else {
                 running = true;
             }
+        }
+        // set cursor icon
+        if running {
+            miniquad::window::set_mouse_cursor(CursorIcon::Wait);
+        } else if !self.overlay.is_none() {
+            miniquad::window::set_mouse_cursor(CursorIcon::Default);
+        } else if self.mouse_on_layer().is_none()
+            && self.mouse_on_palette().is_none()
+            && self
+                .buffers
+                .get(self.current)
+                .is_some_and(|b| b.cursor().is_some())
+        {
+            match self.tool {
+                Tool::Move => miniquad::window::set_mouse_cursor(CursorIcon::Move),
+                _ => miniquad::window::set_mouse_cursor(CursorIcon::Crosshair),
+            }
+        } else {
+            miniquad::window::set_mouse_cursor(CursorIcon::Default);
         }
         let mut frame_changed = false;
         if let Some(buffer) = self.buffers.get_mut(self.current) {
@@ -1592,24 +1264,8 @@ impl Engine {
                 frame_changed = buffer.do_animation(elapsed);
             }
             if running {
-                miniquad::window::set_mouse_cursor(CursorIcon::Wait);
                 return;
-            } else if buffer.cursor().is_some()
-                && self.mouse_on_layer().is_none()
-                && self.mouse_on_palette().is_none()
-            {
-                match (&self.mode, &self.tool) {
-                    (Mode::Help(..), _) => {
-                        miniquad::window::set_mouse_cursor(CursorIcon::Default);
-                    }
-                    (_, Tool::Move) => miniquad::window::set_mouse_cursor(CursorIcon::Move),
-                    _ => miniquad::window::set_mouse_cursor(CursorIcon::Crosshair),
-                }
-            } else {
-                miniquad::window::set_mouse_cursor(CursorIcon::Default);
             }
-        }
-        if let Some(buffer) = self.buffers.get_mut(self.current) {
             if frame_changed
                 && !buffer.edit_all
                 && self.mode.is_normal()
@@ -1681,14 +1337,16 @@ impl Engine {
                         let offset = (offset.0 + dir.0, offset.1 + dir.1);
                         tool::paste_preview(register, buffer, image, offset, self.draw_mode.0);
                     }
-                    _ => (),
                 }
             }
         }
     }
+    // whether another update needs to be scheduled
+    // true if a script is running or animation is playing or non-empty selection (dotted line
+    // animation)
     pub fn needs_update(&self) -> bool {
         #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-        if matches!(self.mode, Mode::Running(..)) {
+        if matches!(self.overlay, Overlay::Running(..)) {
             return true;
         }
         if let Some(buffer) = self.buffers.get(self.current) {

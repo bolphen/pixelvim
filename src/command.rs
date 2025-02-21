@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::color::Color;
-use crate::mapping::{Action, Key};
+use crate::mapping::{Action, KeyOrChar};
 use crate::parser::{Float, Int, OnOff, Size};
 
 pub enum ColorOrIndex {
@@ -47,6 +47,7 @@ pub enum Setting {
 #[derive(Clone, Copy)]
 pub enum Toggleable {
     Fullscreen,
+    Picker,
     Checker,
     Palette,
     Grid,
@@ -159,6 +160,7 @@ impl Default for Settings {
             }
         })
         .onoff_setting("fullscreen", "Toggle fullscreen", Toggleable::Fullscreen)
+        .onoff_setting("picker", "Toggle color picker", Toggleable::Picker)
         .onoff_setting("checker", "Toggle checker", Toggleable::Checker)
         .onoff_setting("palette", "Toggle palette", Toggleable::Palette)
         .onoff_setting(
@@ -218,23 +220,43 @@ impl Default for Settings {
 }
 
 pub struct KeyMapEntry {
-    pub key: Key,
-    pub actions: Vec<Action>,
+    pub key: KeyOrChar,
+    pub key_down: Vec<Action>,
+    pub key_up: Vec<Action>,
 }
 
 impl std::str::FromStr for KeyMapEntry {
     type Err = String;
     fn from_str(expr: &str) -> Result<Self, String> {
-        if let Some((k, acts)) = expr.split_once(' ') {
-            let key = k.trim().parse()?;
-            let mut actions = Vec::new();
-            for act in acts.split(" THEN ") {
-                actions.push(act.trim().parse()?);
-            }
-            Ok(KeyMapEntry { key, actions })
+        let (key, acts);
+        if let Some(rest) = expr.strip_prefix("' '") {
+            key = KeyOrChar::Char(' ');
+            acts = rest;
+        } else if let Some((k, rest)) = expr.split_once(' ') {
+            key = k.trim().parse()?;
+            acts = rest;
         } else {
-            Err("Cannot parse key map")?
+            return Err("Cannot parse key map")?;
         }
+        let mut key_down = Vec::new();
+        let mut key_up = Vec::new();
+        if let Some((down, up)) = acts.split_once(" KEYUP ") {
+            for act in down.split(" THEN ") {
+                key_down.push(act.trim().parse()?);
+            }
+            for act in up.split(" THEN ") {
+                key_up.push(act.trim().parse()?);
+            }
+        } else {
+            for act in acts.split(" THEN ") {
+                key_down.push(act.trim().parse()?);
+            }
+        }
+        Ok(KeyMapEntry {
+            key,
+            key_down,
+            key_up,
+        })
     }
 }
 
@@ -282,6 +304,8 @@ pub enum Command {
     New(Option<Size>),
     Edit(PathBuf),
     Write { path: Option<PathBuf>, forced: bool },
+    PrintWorkingDir,
+    ChangeDir(PathBuf),
     Resize(Size),
     // setting parsing are delayed
     Set(String),
@@ -322,8 +346,11 @@ pub enum Command {
     PaletteBuild,
     PaletteGradient(Color, Color, Int),
     RunScript(PathBuf, Option<Modifier>),
+    Yank,
     Paste,
-    Insert,
+    Cut,
+    Delete,
+    PasteSystem,
 }
 impl Command {
     pub fn modify(self, modifier: Option<Modifier>) -> Self {
@@ -514,6 +541,16 @@ impl Default for Commands {
             let path = (!args.is_empty()).then_some(args.into());
             Ok(Command::Write { path, forced })
         })
+        .command("pwd", "Print working directory", |_, _| {
+            Ok(Command::PrintWorkingDir)
+        })
+        .command("cd", "Change working directory", |args, _| {
+            if args.is_empty() {
+                Ok(Command::ChangeDir(escape_path("~")))
+            } else {
+                Ok(Command::ChangeDir(escape_path(args)))
+            }
+        })
         .command("resize", "Resize image", |args, _| {
             Ok(Command::Resize(args.parse()?))
         })
@@ -664,11 +701,12 @@ impl Default for Commands {
             let (c2, rest) = rest.split_once(' ').ok_or("Cannot parse command")?;
             Ok(Command::PaletteGradient(c1, c2.parse()?, rest.parse()?))
         })
-        .command("paste", "Paste from system clipboard", |_, _| {
-            Ok(Command::Paste)
-        })
-        .command("insert", "Insert using current tool", |_, _| {
-            Ok(Command::Insert)
+        .command("yank", "Yank", |_, _| Ok(Command::Yank))
+        .command("paste", "Paste", |_, _| Ok(Command::Paste))
+        .command("cut", "Cut", |_, _| Ok(Command::Cut))
+        .command("delete", "Delete", |_, _| Ok(Command::Delete))
+        .command("paste/system", "Paste from system clipboard", |_, _| {
+            Ok(Command::PasteSystem)
         })
     }
 }

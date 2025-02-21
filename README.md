@@ -17,11 +17,11 @@ are encouraged to back up your works.**
     - `:map C-z :undo` maps `Ctrl-z` to undo
     - Commands can be chained: you can map a single key to `:select/all THEN
       cut THEN :layer/new/above THEN paste`
-    - `:quantize 32 THEN :palette/build` first quantize the image into 32
-      colors then rebuild the palette from it
     - Customizable via configuration file: put a `pixelvim.conf` in your
       `.config/` directory, or load on-the-fly using `:source new.conf`
     - Tab-completion and command history
+    - Insert mode to draw purely with keyboard (actually more useful than it
+      sounds)
 
 - Advanced (and undo/redoable) pixel selection in `visual` mode, similar to
   `aseprite`
@@ -60,7 +60,9 @@ cargo install --path .
 I built this mainly for personal use, and I still have several ideas that I
 wish to implement. Some design are not finalized. Also, the code is quite messy
 and at places held up with glue. So do note that future updates may break your
-configuration file.
+configuration file. For this reason, I recommend putting `source
+config/pixelvim.conf` in your configuration file and add your custom ones after
+it, instead of copying the whole file.
 
 ## Implementation
 `pixelvim` is built with the outstanding

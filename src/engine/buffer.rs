@@ -354,14 +354,17 @@ impl Buffer {
         let color = self.composed().get(x, y)?;
         Some(((x, y), *color))
     }
-    pub fn move_cursor(&mut self, dir: (i32, i32)) {
+    pub fn move_cursor(&mut self, dir: (i32, i32)) -> (i32, i32) {
         let (w, h) = (self.width(), self.height());
         if let Some((x, y)) = &mut self.cursor.cursor {
             *x = (*x + dir.0).clamp(0, w as i32 - 1);
             *y = (*y + dir.1).clamp(0, h as i32 - 1);
+            (*x, *y)
         } else {
             let (x, y) = self.coordinate(self.cursor.mouse);
-            self.cursor.cursor = Some((x.clamp(0, w as i32 - 1), y.clamp(0, h as i32 - 1)));
+            let cursor = (x.clamp(0, w as i32 - 1), y.clamp(0, h as i32 - 1));
+            self.cursor.cursor = Some(cursor);
+            cursor
         }
     }
     pub fn is_saved(&self) -> bool {

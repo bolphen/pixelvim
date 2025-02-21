@@ -47,7 +47,7 @@ impl Engine {
                 self.mode.set_to_normal(None);
             }
             Command::Help => {
-                self.mode = Mode::Help(TextViewer::new(&format!(
+                self.overlay = Overlay::Help(TextViewer::new(&format!(
                     "{}\nKEYMAP\n======\n{}",
                     include_str!("../../assets/help/help.txt"),
                     self.key_map.help()
@@ -84,6 +84,25 @@ impl Engine {
                 self.run_script_from_path(&path, modifier);
             }
             Command::Write { path, forced } => self.save_buffer(path, forced)?,
+            Command::PrintWorkingDir => match std::env::current_dir() {
+                Ok(path) => self.mode.message(path.to_str().ok_or("Path not UTF-8")?),
+                Err(_) => self.mode.error("Cannot get working directory"),
+            },
+            Command::ChangeDir(path) => {
+                if path.is_dir() {
+                    match std::env::set_current_dir(&path) {
+                        Ok(()) => self.mode.message(
+                            std::env::current_dir()
+                                .expect("")
+                                .to_str()
+                                .ok_or("Path not UTF-8")?,
+                        ),
+                        Err(_) => self.mode.error("Cannot change working directory"),
+                    }
+                } else {
+                    self.mode.error("Not a directory");
+                }
+            }
             Command::Resize(size) => {
                 if let Some(buffer) = self.buffers.get_mut(self.current) {
                     if size != buffer.size() {
@@ -138,6 +157,10 @@ impl Engine {
                     }
                     self.mode
                         .message(&format!("  fullscreen={}", self.fullscreen));
+                }
+                Setting::Toggleable(Toggleable::Picker, value) => {
+                    self.picker = value.0;
+                    self.mode.message(&format!("  picker={}", self.picker));
                 }
                 Setting::Toggleable(Toggleable::Checker, value) => {
                     self.checker = value.0;
@@ -241,6 +264,10 @@ impl Engine {
                         self.mode
                             .message(&format!("  fullscreen={}", self.fullscreen));
                     }
+                    Toggleable::Picker => {
+                        self.picker = !self.picker;
+                        self.mode.message(&format!("  picker={}", self.picker));
+                    }
                     Toggleable::Checker => {
                         self.checker = !self.checker;
                         self.mode.message(&format!("  checker={}", self.checker));
@@ -298,14 +325,22 @@ impl Engine {
                 _ => self.mode.error("Setting cannot be toggled"),
             },
             Command::Map(map) => {
-                self.key_map.normal_map.insert(map.key, map.actions.clone());
-                self.key_map.visual_map.insert(map.key, map.actions);
+                self.key_map
+                    .normal_map
+                    .insert(map.key, (map.key_down.clone(), map.key_up.clone()));
+                self.key_map
+                    .visual_map
+                    .insert(map.key, (map.key_down, map.key_up));
             }
             Command::MapNormal(map) => {
-                self.key_map.normal_map.insert(map.key, map.actions);
+                self.key_map
+                    .normal_map
+                    .insert(map.key, (map.key_down, map.key_up));
             }
             Command::MapVisual(map) => {
-                self.key_map.visual_map.insert(map.key, map.actions);
+                self.key_map
+                    .visual_map
+                    .insert(map.key, (map.key_down, map.key_up));
             }
             Command::Undo(count) | Command::Redo(count) => {
                 let buffer = self.active_buffer_mut()?;
@@ -727,36 +762,100 @@ impl Engine {
                     }
                 }
             }
-            Command::Insert => {
+            Command::Yank => {
                 let buffer = self
                     .buffers
                     .get_mut(self.current)
                     .ok_or("No active buffer")?;
-                if let Some(cursor) = buffer.cursor() {
-                    self.tracker.start(cursor);
-                    if self.mode.is_visual() {
-                        self.tool.visual_use(
-                            &self.tracker,
-                            buffer,
-                            self.draw_mode.1,
-                            self.mode.take_modifier(),
-                            &self.tool_setting,
-                        );
-                    } else if !matches!(self.tool, Tool::Move) {
-                        self.tool.normal_preview(
-                            &self.tracker,
-                            buffer,
-                            self.draw_mode.0,
-                            self.color,
-                            self.mode.take_modifier(),
-                            &self.tool_setting,
-                        );
-                        buffer.commit_temporary(self.tool.string_short());
-                    }
-                    self.tracker.stop();
+                if let Mode::Normal {
+                    paste_info: Some(paste_info),
+                    ..
+                } = &self.mode
+                {
+                    let mut register = paste_info.register.clone();
+                    register.offset.0 += paste_info.offset.0;
+                    register.offset.1 += paste_info.offset.1;
+                    self.registers.insert('"', register);
+                    self.mode
+                        .set_message(Message::normal("Yanked to register \"\""));
+                } else if let Some(r) = Register::new(buffer.image(), buffer.selection()) {
+                    self.registers.insert('"', r);
+                    self.mode
+                        .set_message(Message::normal("Yanked to register \"\""));
+                } else if let Some(cursor) = buffer.cursor() {
+                    buffer.picker(cursor).map(|c| self.color = c);
                 }
             }
             Command::Paste => {
+                let buffer = self
+                    .buffers
+                    .get_mut(self.current)
+                    .ok_or("No active buffer")?;
+                if let Some(r) = self.registers.get(&'"') {
+                    let (image, img_idx, reg_idx) = tool::paste(
+                        r,
+                        PasteFrom::Register(r),
+                        buffer,
+                        None,
+                        None,
+                        self.draw_mode.0,
+                    );
+                    self.tool = Tool::Move;
+                    self.mode = Mode::paste(
+                        image,
+                        img_idx,
+                        Some(Message::normal("Pasted from register \"\"")),
+                        r.clone(),
+                        Some(reg_idx),
+                        None,
+                        buffer.current_layer_id(),
+                        buffer.current_frame_id(),
+                    );
+                } else {
+                    self.mode.error("Register \"\" is empty");
+                }
+            }
+            Command::Cut => {
+                let buffer = self
+                    .buffers
+                    .get_mut(self.current)
+                    .ok_or("No active buffer")?;
+                let paste_info = self.mode.take_paste_info();
+                if let Some(paste_info) = paste_info {
+                    let mut register = paste_info.register;
+                    register.offset.0 += paste_info.offset.0;
+                    register.offset.1 += paste_info.offset.1;
+                    self.registers.insert('"', register);
+                    buffer.edit_infallible("cut", |_i, _s, _sym| paste_info.image, false);
+                    buffer.amend_selection(|_i, _s, _sym| Selection::new());
+                    self.mode
+                        .set_to_normal(Some(Message::normal("Cut to register \"\"")));
+                } else if let Some(r) = Register::new(buffer.image(), buffer.selection()) {
+                    self.registers.insert('"', r);
+                    buffer
+                        .edit(
+                            Some("cut"),
+                            |i, s, _sym| Some(crate::tool::cut(i, s)),
+                            false,
+                        )
+                        .expect("infallible");
+                    buffer.amend_selection(|_i, _s, _sym| Selection::new());
+                    self.mode
+                        .set_to_normal(Some(Message::normal("Cut to register \"\"")));
+                }
+            }
+            Command::Delete => {
+                let buffer = self
+                    .buffers
+                    .get_mut(self.current)
+                    .ok_or("No active buffer")?;
+                if Register::new(buffer.image(), buffer.selection()).is_some() {
+                    buffer.edit_infallible("cut", |i, s, _sym| crate::tool::cut(i, s), false);
+                    buffer.amend_selection(|_i, _s, _sym| Selection::new());
+                    self.mode.set_to_normal(Some(Message::normal("Delete")));
+                }
+            }
+            Command::PasteSystem => {
                 if let Some(buf) = miniquad::window::clipboard_get_image() {
                     if let Ok(image) = crate::format::load_png(&buf[..]) {
                         let buffer = self.new_buffer_from_image(image);

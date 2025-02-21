@@ -72,15 +72,12 @@ impl Brush {
             }
             Brush::Round(size) => {
                 let size = *size as i32;
-                let mut brush = Vec::new();
-                for i in -size / 2..(size / 2 + 1) {
-                    for j in -size / 2..(size / 2 + 1) {
-                        if 4 * (i * i + j * j) <= size * size {
-                            brush.push((x + i, y + j));
-                        }
-                    }
-                }
-                brush
+                _ellipse((
+                    (x - size / 2, y - size / 2),
+                    (x + (size - 1) / 2, y + (size - 1) / 2),
+                ))
+                .into_iter()
+                .collect()
             }
             Brush::Custom(shape) => shape.iter().map(|(dx, dy)| (x + dx, y + dy)).collect(),
         }
@@ -90,35 +87,31 @@ impl Brush {
 use std::collections::HashSet;
 pub type Selection = HashSet<(i32, i32)>;
 
-pub fn line(p0: (i32, i32), p1: (i32, i32)) -> Vec<(i32, i32)> {
+fn _line(p0: (i32, i32), p1: (i32, i32)) -> Vec<(i32, i32)> {
     let (x0, y0) = p0;
     let (x1, y1) = p1;
-    if x0 > x1 {
-        let mut result = line(p1, p0);
-        result.reverse();
-        return result;
-    }
-    let dx = x1 - x0;
+    let dx = (x1 - x0).abs();
     let dy = (y1 - y0).abs();
-    if dy > dx {
-        return line((y0, x0), (y1, x1))
-            .iter()
-            .map(|(x, y)| (*y, *x))
-            .collect();
-    }
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
     let mut result = Vec::new();
-    let yi = if y1 > y0 { 1 } else { -1 };
-    let mut d = 2 * dy - dx;
-    let mut y = y0;
-    for x in x0..x1 {
+    let mut error = 0;
+    let (mut x, mut y) = (x0, y0);
+    loop {
         result.push((x, y));
-        if d > 0 {
-            y += yi;
-            d -= 2 * dx;
+        if x == x1 && y == y1 {
+            break;
         }
-        d += 2 * dy;
+        let e = error;
+        if 2 * e - dy + 2 * dx >= 0 {
+            error -= dy;
+            x += sx;
+        }
+        if 2 * e - 2 * dy + dx <= 0 {
+            error += dx;
+            y += sy;
+        }
     }
-    result.push(p1);
     result
 }
 
@@ -134,7 +127,7 @@ fn _lasso(trace: Vec<(i32, i32)>, brush: &Brush) -> Selection {
     for i in 0..trace.len() {
         let pos1 = trace[i];
         let pos2 = trace[if i < trace.len() - 1 { i + 1 } else { 0 }];
-        let line = line(pos1, pos2);
+        let line = _line(pos1, pos2);
         for (x, y) in &line {
             for p in brush.at(*x, *y) {
                 result.insert(p);
@@ -166,7 +159,7 @@ fn _brush(trace: Vec<(i32, i32)>, brush: &Brush) -> Selection {
     let mut result = Selection::new();
     if let Some(mut p1) = trace.first().copied() {
         for p2 in trace {
-            for (x, y) in line(p1, p2) {
+            for (x, y) in _line(p1, p2) {
                 for p in brush.at(x, y) {
                     result.insert(p);
                 }
@@ -250,6 +243,143 @@ pub fn rect(
     }
     if symmetry.x && symmetry.y {
         result.extend((func)((sym.sym_x_y(bounds.0), sym.sym_x_y(bounds.1))));
+    }
+    result
+}
+
+fn _arc(dx: i32, dy: i32) -> Vec<(i32, i32)> {
+    if dy > dx {
+        return _arc(dy, dx)
+            .into_iter()
+            .map(|(y, x)| (x, y))
+            .rev()
+            .collect();
+    }
+    let (dx2, dy2) = ((dx * dx) as f32, (dy * dy) as f32);
+    let mut arc = Vec::new();
+    let (mut x, mut y) = (0, dy / 2);
+    let mut error = 0.; // use f32 to avoid overflow
+    loop {
+        arc.push((x, y));
+        if x >= dx / 2 {
+            break;
+        }
+        let ex = (2 * x - dx + 1) as f32 * dy2;
+        let ey = (-2 * y + dy + 1) as f32 * dx2;
+        let e1 = error + ex / 2. + ey - dy2 / 4.;
+        let e2 = error + ex + ey / 2. - dx2 / 4.;
+        let mut e3 = e2;
+        if e2 <= 0. {
+            error += ey;
+            e3 += ey + dx2;
+            y -= 1;
+        }
+        if e1 >= 0. || e3 >= 0. {
+            error += ex;
+            x += 1;
+        }
+    }
+    arc
+}
+
+fn _ellipse(bounds: ((i32, i32), (i32, i32))) -> Selection {
+    let x0 = bounds.0 .0.min(bounds.1 .0);
+    let y0 = bounds.0 .1.min(bounds.1 .1);
+    let x1 = bounds.0 .0.max(bounds.1 .0);
+    let y1 = bounds.0 .1.max(bounds.1 .1);
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let mut result = Selection::new();
+    let mut yy = dy + 1;
+    for (x, y) in _arc(dx, dy) {
+        if y < yy {
+            for xx in x0 + x..=x1 - x {
+                result.insert((xx, y0 + y));
+                result.insert((xx, y1 - y));
+            }
+            yy = y;
+        }
+    }
+    result
+}
+
+fn _ellipse_outline(bounds: ((i32, i32), (i32, i32))) -> Selection {
+    let x0 = bounds.0 .0.min(bounds.1 .0);
+    let y0 = bounds.0 .1.min(bounds.1 .1);
+    let x1 = bounds.0 .0.max(bounds.1 .0);
+    let y1 = bounds.0 .1.max(bounds.1 .1);
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let mut result = Selection::new();
+    for (x, y) in _arc(dx, dy) {
+        result.insert((x0 + x, y0 + y));
+        result.insert((x1 - x, y0 + y));
+        result.insert((x0 + x, y1 - y));
+        result.insert((x1 - x, y1 - y));
+    }
+    result
+}
+
+pub fn ellipse(
+    image: &Image,
+    bounds: ((i32, i32), (i32, i32)),
+    symmetry: Symmetry,
+    outline: bool,
+) -> Selection {
+    let (w, h) = (image.width() as i32, image.height() as i32);
+    let sym = symmetry.helper(w, h);
+    let func = if outline { _ellipse_outline } else { _ellipse };
+    let mut result = (func)(bounds);
+    if symmetry.x {
+        result.extend((func)((sym.sym_x(bounds.0), sym.sym_x(bounds.1))));
+    }
+    if symmetry.y {
+        result.extend((func)((sym.sym_y(bounds.0), sym.sym_y(bounds.1))));
+    }
+    if symmetry.x && symmetry.y {
+        result.extend((func)((sym.sym_x_y(bounds.0), sym.sym_x_y(bounds.1))));
+    }
+    result
+}
+
+fn _line_brush(bounds: ((i32, i32), (i32, i32)), brush: &Brush) -> Selection {
+    let mut result = Selection::new();
+    for (x, y) in _line(bounds.0, bounds.1) {
+        for p in brush.at(x, y) {
+            result.insert(p);
+        }
+    }
+    result
+}
+
+pub fn line(
+    image: &Image,
+    bounds: ((i32, i32), (i32, i32)),
+    symmetry: Symmetry,
+    brush: &Brush,
+) -> Selection {
+    let (w, h) = (image.width() as i32, image.height() as i32);
+    let sym = symmetry.helper(w, h);
+    let mut result: HashSet<_> = (_line_brush)((bounds.0, bounds.1), brush)
+        .into_iter()
+        .collect();
+    if symmetry.x {
+        result.extend((_line_brush)(
+            (sym.sym_x(bounds.0), sym.sym_x(bounds.1)),
+            brush,
+        ));
+    }
+    if symmetry.y {
+        result.extend((_line_brush)(
+            (sym.sym_y(bounds.0), sym.sym_y(bounds.1)),
+            brush,
+        ));
+    }
+    if symmetry.x && symmetry.y {
+        result.extend((_line_brush)(
+            (sym.sym_x_y(bounds.0), sym.sym_x_y(bounds.1)),
+            brush,
+        ));
     }
     result
 }
@@ -364,4 +494,46 @@ pub fn flip_y(image: &Image, selection: &Selection, symmetry: Symmetry) -> Selec
         .iter()
         .map(|(x, y)| (*x, height as i32 - 1 - y + offset))
         .collect()
+}
+
+pub fn pixel_perfect_filter(trace: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let mut new = Vec::new();
+    let (mut p0, mut p1) = (trace[0], trace[0]);
+    for (i, p2) in trace.iter().enumerate() {
+        let p2 = *p2;
+        if i >= 2 && (p0.0 == p1.0 && p1.1 == p2.1 || p0.1 == p1.1 && p1.0 == p2.0) {
+            new.pop();
+            p1 = p2;
+        } else {
+            (p0, p1) = (p1, p2);
+        }
+        new.push(p2);
+    }
+    new
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn ellipse_symmetry() {
+        for i in 0..50 {
+            for j in 0..i {
+                let e1: Selection = _ellipse_outline(((0, 0), (i, j)))
+                    .into_iter()
+                    .map(|(y, x)| (x, y))
+                    .collect();
+                let e2 = _ellipse_outline(((j, i), (0, 0)));
+                assert_eq!(e1, e2);
+
+                let e1: Selection = _ellipse(((0, 0), (i, j)))
+                    .into_iter()
+                    .map(|(y, x)| (x, y))
+                    .collect();
+                let e2 = _ellipse(((j, i), (0, 0)));
+                assert_eq!(e1, e2);
+            }
+        }
+    }
 }

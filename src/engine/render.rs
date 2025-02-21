@@ -1,4 +1,4 @@
-use super::{DisplayMode, Engine, Mode, Modifier, Tool};
+use super::{DisplayMode, Engine, Mode, Modifier, Overlay, Tool};
 
 use crate::color::Color;
 use crate::console::Console;
@@ -10,7 +10,7 @@ impl Engine {
         let w = console.width() as i32;
         let h = console.height() as i32;
 
-        if let Mode::Help(view) = &self.mode {
+        if let Overlay::Help(view) = &self.overlay {
             let help_string = format!("pixelvim v{}", crate::VERSION);
             console.print(&help_string, 1, 0, Color::WHITE.into(), None);
             for (i, line) in view.lines().iter().enumerate() {
@@ -22,6 +22,9 @@ impl Engine {
                         Color::LIGHTGRAY.into(),
                         None,
                     );
+                    if i as i32 + 2 - view.scroll >= console.height() as i32 - 1 {
+                        break;
+                    }
                 }
             }
         } else {
@@ -276,75 +279,6 @@ impl Engine {
                 );
             }
             match &self.mode {
-                Mode::Command(input, _) => {
-                    console.print(":", 1, h - 1, Color::WHITE.into(), self.background.into());
-                    console.print(
-                        input.text(),
-                        2,
-                        h - 1,
-                        Color::WHITE.into(),
-                        self.background.into(),
-                    );
-                    if let Some(c) = &input.completions {
-                        let len = (c.2.len()).min(h as usize - 2);
-                        let high = c.1 + (c.2.len() - c.1).min(len);
-                        let low = high - len.min(high);
-                        let w = (low..high).map(|i| c.2[i].len()).max().unwrap();
-                        for i in low..high {
-                            let (fg, bg) = if i == c.1 {
-                                (self.background, Color::WHITE)
-                            } else {
-                                (Color::LIGHTGRAY, Color::GRAY)
-                            };
-                            let x = 1 + c.0.start as i32;
-                            let y = h - 2 - (len + low - 1 - i) as i32;
-                            if let Some(color) = c.2[i].2 {
-                                console.print(
-                                    &format!(
-                                        " {}{}",
-                                        c.2[i].0,
-                                        " ".repeat(w + 1 - c.2[i].0.chars().count())
-                                    ),
-                                    x,
-                                    y,
-                                    fg.into(),
-                                    bg.into(),
-                                );
-                                console.print("    ", x + w as i32 - 3, y, None, color.into());
-                            } else if let Some(help) = &c.2[i].1 {
-                                console.print(
-                                    &format!(
-                                        " {} ({}){}",
-                                        c.2[i].0,
-                                        help,
-                                        " ".repeat(
-                                            w - 2 - c.2[i].0.chars().count() - help.chars().count()
-                                        )
-                                    ),
-                                    x,
-                                    y,
-                                    fg.into(),
-                                    bg.into(),
-                                );
-                            } else {
-                                console.print(
-                                    &format!(
-                                        " {}{}",
-                                        c.2[i].0,
-                                        " ".repeat(w + 1 - c.2[i].0.chars().count())
-                                    ),
-                                    x,
-                                    y,
-                                    fg.into(),
-                                    bg.into(),
-                                );
-                            }
-                        }
-                    }
-                    console
-                        .get_mut(input.cursor() as i32 + 2, h - 1)
-                        .map(|t| t.2 = Color::GRAY);
-                }
                 Mode::Normal {
                     message, modifier, ..
                 }
@@ -395,17 +329,85 @@ impl Engine {
                         _ => (),
                     }
                 }
-                #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-                Mode::Running(..) => {
-                    console.print(
-                        "Script running (cancel with Ctrl-C)",
-                        1,
-                        h - 1,
-                        Color::ORANGE.into(),
-                        self.background.into(),
-                    );
+            }
+            if let Overlay::Command(input) = &self.overlay {
+                console.print(":", 1, h - 1, Color::WHITE.into(), self.background.into());
+                console.print(
+                    input.text(),
+                    2,
+                    h - 1,
+                    Color::WHITE.into(),
+                    self.background.into(),
+                );
+                if let Some(c) = &input.completions {
+                    let len = (c.2.len()).min(h as usize - 2);
+                    let high = c.1 + (c.2.len() - c.1).min(len);
+                    let low = high - len.min(high);
+                    let w = (low..high).map(|i| c.2[i].len()).max().unwrap();
+                    for i in low..high {
+                        let (fg, bg) = if i == c.1 {
+                            (self.background, Color::WHITE)
+                        } else {
+                            (Color::LIGHTGRAY, Color::GRAY)
+                        };
+                        let x = 1 + c.0.start as i32;
+                        let y = h - 2 - (len + low - 1 - i) as i32;
+                        if let Some(color) = c.2[i].2 {
+                            console.print(
+                                &format!(
+                                    " {}{}",
+                                    c.2[i].0,
+                                    " ".repeat(w + 1 - c.2[i].0.chars().count())
+                                ),
+                                x,
+                                y,
+                                fg.into(),
+                                bg.into(),
+                            );
+                            console.print("    ", x + w as i32 - 3, y, None, color.into());
+                        } else if let Some(help) = &c.2[i].1 {
+                            console.print(
+                                &format!(
+                                    " {} ({}){}",
+                                    c.2[i].0,
+                                    help,
+                                    " ".repeat(
+                                        w - 2 - c.2[i].0.chars().count() - help.chars().count()
+                                    )
+                                ),
+                                x,
+                                y,
+                                fg.into(),
+                                bg.into(),
+                            );
+                        } else {
+                            console.print(
+                                &format!(
+                                    " {}{}",
+                                    c.2[i].0,
+                                    " ".repeat(w + 1 - c.2[i].0.chars().count())
+                                ),
+                                x,
+                                y,
+                                fg.into(),
+                                bg.into(),
+                            );
+                        }
+                    }
                 }
-                _ => (),
+                console
+                    .get_mut(input.cursor() as i32 + 2, h - 1)
+                    .map(|t| t.2 = Color::GRAY);
+            }
+            #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
+            if let Overlay::Running(..) = &self.overlay {
+                console.print(
+                    "Script running (cancel with Ctrl-C)",
+                    1,
+                    h - 1,
+                    Color::ORANGE.into(),
+                    self.background.into(),
+                );
             }
         }
     }
@@ -417,11 +419,14 @@ impl Engine {
             let margin = graphics.scale();
             let viewport = buffer.viewport;
             let (x, y, w, h) = viewport.get();
-            let outline_color = match self.mode {
+            let outline_color2 = match self.mode {
                 Mode::Normal { .. } => Color::LIGHTGRAY,
                 Mode::Visual { .. } => self.visual_color.alpha(0xff),
-                Mode::Command(..) => self.background,
-                _ => self.background,
+            };
+            let outline_color1 = if self.tracker.is_any_in_use() {
+                outline_color2
+            } else {
+                Color::BLACK
             };
             let main_color = match self.mode {
                 Mode::Visual { .. } => Color::ORANGE,
@@ -480,7 +485,12 @@ impl Engine {
                     }
                 }
             }
-            graphics.draw_rect_outline_fancy(viewport, margin, outline_color.into());
+            graphics.draw_rect_outline_fancy(
+                viewport,
+                margin,
+                outline_color1.into(),
+                outline_color2.into(),
+            );
             if buffer.grid().on {
                 let size = (
                     buffer.grid().size.0 as f32 * scale,
@@ -503,7 +513,9 @@ impl Engine {
                 graphics.draw_selection(buffer.id(), viewport, Color(0, 0, 0, 0), time)
             }
             if let Some(cursor) = buffer.cursor() {
-                if !(matches!(self.tool, Tool::Move) || matches!(self.mode, Mode::Help(..))) {
+                if (!matches!(self.tool, Tool::Move) || self.tracker.is_keyboard_in_use())
+                    && self.overlay.is_none()
+                {
                     let (width, height) = (buffer.width() as _, buffer.height() as _);
                     let sx = width - 1 + buffer.symmetry().x_offset - cursor.0;
                     let sy = height - 1 + buffer.symmetry().y_offset - cursor.1;
@@ -548,12 +560,13 @@ impl Engine {
                             scale,
                         ),
                         margin,
+                        outline_color1.into(),
                         main_color,
                     );
                 }
             }
         }
-        if matches!(self.mode, Mode::Help(..)) {
+        if let Overlay::Help(..) = &self.overlay {
             graphics.draw_rect_filled(
                 Rect::new(0., 0., self.screen.0, self.screen.1),
                 self.background.alpha(192).into(),

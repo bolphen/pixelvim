@@ -110,6 +110,7 @@ fn parse_named(expr: &str) -> Option<Color> {
         "black" => Some(Color::BLACK),
         "red" => Some(Color::RED),
         "orange" => Some(Color::ORANGE),
+        "cyan" => Some(Color::CYAN),
         _ => None,
     }
 }

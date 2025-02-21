@@ -266,11 +266,18 @@ impl Input {
                     Match::Single("source") => {
                         data.complete_path(self, to_complete.replace("\\ ", " "), None);
                     }
+                    Match::Single("cd") => {
+                        data.complete_path(self, to_complete.replace("\\ ", " "), Some(vec![]));
+                    }
                     Match::Single("palette/delete") => {
                         data.complete_palette(self, to_complete.into());
                     }
                     // recursive call to complete commands in key mappings
                     Match::Single(c) if c.starts_with("map") => {
+                        let to_complete = to_complete
+                            .rsplit_once(" KEYUP ")
+                            .map(|(_, r)| r)
+                            .unwrap_or(to_complete);
                         let to_complete = to_complete
                             .rsplit_once(" THEN ")
                             .map(|(_, r)| r)

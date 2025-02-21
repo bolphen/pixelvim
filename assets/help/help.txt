@@ -6,11 +6,10 @@ customizable, and extendable via user scripts.
 
 GETTING STARTED
 ===============
-The interface should be familiar if you are a vim-user.
+The interface should be familiar if you are a vim user.
 
-Enter command mode by typing `:` (`Shift-;` if you are not using a qwerty
-layout; remappable). Typing `tab` then will give you a list of available
-commands. Here are the basic ones.
+Enter command mode by typing `:`. Typing `tab` then will give you a list of
+available commands. Here are the basic ones.
 
 * `:new` or `:new 64 64` will create an empty canvas.
 
@@ -38,7 +37,7 @@ your image to give it a path as soon as possible!
 
 MODES
 =====
-There are two main modes:
+There are two modes:
 
 * Normal mode:
     Use the mouse to draw normally, using a variety of tools.
@@ -47,11 +46,38 @@ There are two main modes:
     You can use the same tools, but instead of drawing directly on the canvas,
     you add to or subtract from a selection.
 
+You can distinguish the modes via the colored outline: normal is gray while
+visual is orange.
+
 By default, `V` toggles normal / visual mode.
 
-There's also command mode, where you can type in commands in a prompt at the
-bottom of the screen (by typing `:` by default). An insert mode is planned for
-drawing with only keyboard.
+INSERT
+======
+Different from vim, there is no dedicated insert "mode". Rather, insert is a
+*state* that can happen under both normal and visual mode. It is indicated via
+a highlighted outline.
+
+* If you use a mouse, click the mouse will enter and remain in insert state as
+  long as you are holding down the mouse. You simply draw as you normally would
+  with any image editor. Pressing `Escape` before you release the mouse will
+  cancel the current edit.
+
+* If you use a keyboard, press `I` will enter insert state. You can then move
+  the cursor around with the vi-movement keys. This will apply the current tool
+  *as if* you are using a mouse. Pressing `Escape` or `I` again will leave the
+  insert state and register the current edit, *as if* you released the mouse.
+  You might find "pixel perfect" useful, which allows you to draw diagonally.
+
+To avoid buggy behavior, some actions are restricted under insert state.
+
+* If you enter insert state with mouse, you cannot use movement keys, fit to
+  screen, or use command.
+
+* If you enter insert state with keyboard, the cursor will no longer follow
+  your mouse, so you can move your mouse freely around and zoom the image. If
+  you click the mouse, you will register the current edit and reenter insert
+  mode to begin another edit. Similarly, if you try to do any command, the
+  current edit will be registered before that command is performed.
 
 TOOLS
 =====
@@ -73,18 +99,27 @@ TOOLS
 
     Rectangles
 
+* `C` outl. ellipse and fill. ellipse
+
+    Ellipses (`C` for "circle")
+
+* `S` line
+
+    Line (`S` for "straight line" or "segment")
+
 * `M` move
 
     Move the selected pixels or the whole canvas if the selection is empty.
     You can use the vi-movement keys, with number modifiers (`5j` for moving 5
     pixels down).
 
-Modes and tools can be swapped live. For example, if you click the mouse when
-using outline rect in normal mode, and want to swap to filled rect in visual
-mode, you can do so by typing `R` and `V` before releasing the mouse.
+Modes and tools can be swapped live while in insert state. For example, if you
+click the mouse when using outline rect in normal mode, and want to swap to
+filled rect in visual mode, you can do so by typing `R` and `V` before
+releasing the mouse.
 
-Similarly, the following global settings can be changed live (i.e., before you
-release the mouse).
+Similarly, the following global settings can be changed live while in insert
+state.
 
 * `E` and `-` toggles draw / erase (or add / sub in visual mode)
 
@@ -124,11 +159,31 @@ You can also map keys to commands
     map x :toggle x-sym
 
 The line between actions and commands is not that clear. Mostly, actions are
-those you can perform while painting; commands are more complex ones that
-require you to go into command mode and are marked with a `:`.
+those you can perform while in insert state; commands are more complex ones
+that require you to leave insert mode and are marked with a `:`.
+
+You can also define actions to perform when a key is released, using the
+`KEYUP` syntax. For example, by default, holding left `Alt` down will activate
+the color picker.
+
+    map alt :set picker KEYUP :unset picker
+
+Due to different keyboard layouts, you can also use character-based mapping
+with single quotes. For example, the `:` key is mapped with
+
+    map ':' command
+
+Note that both mappings (e.g., `' '` and `space`) can be used at the same time
+but you should probably pick only one.
 
 The key mapping can be set up in a config file. You can also change them in
 command mode or by `source`ing a config file.
+
+Instead of copying the default configuration file, I recommend putting
+
+    source config/pixelvim.conf
+
+at the beginning of your own config file and add your custom ones after it.
 
 LAYER AND FRAME
 ===============

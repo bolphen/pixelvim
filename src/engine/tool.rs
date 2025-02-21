@@ -10,25 +10,47 @@ type Bounds = ((i32, i32), (i32, i32));
 type Once = (i32, i32);
 type Dir = (i32, i32);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InputType {
+    Keyboard,
+    Mouse,
+}
 #[derive(Default)]
 pub struct Tracker {
-    trace: Option<Vec<(i32, i32)>>,
+    trace: Option<(Vec<(i32, i32)>, InputType)>,
     pub pixel_perfect: bool,
 }
 impl Tracker {
-    pub fn is_in_use(&self) -> bool {
+    pub fn is_any_in_use(&self) -> bool {
         self.trace.is_some()
     }
-    pub fn start(&mut self, pos: (i32, i32)) {
-        self.trace = Some(vec![pos]);
+    pub fn is_mouse_in_use(&self) -> bool {
+        self.trace
+            .as_ref()
+            .is_some_and(|(_, input)| matches!(input, InputType::Mouse))
+    }
+    pub fn is_keyboard_in_use(&self) -> bool {
+        self.trace
+            .as_ref()
+            .is_some_and(|(_, input)| matches!(input, InputType::Keyboard))
+    }
+    pub fn start(&mut self, pos: (i32, i32), input: InputType) {
+        self.trace = Some((vec![pos], input));
     }
     pub fn trim(&mut self) {
-        if let Some(trace) = &mut self.trace {
+        if let Some((trace, _)) = &mut self.trace {
             trace.drain(0..trace.len() - 1);
         }
     }
-    pub fn track(&mut self, pos: (i32, i32)) {
-        if let Some(trace) = &mut self.trace {
+    pub fn track_mouse(&mut self, pos: (i32, i32)) {
+        if let Some((trace, InputType::Mouse)) = &mut self.trace {
+            if trace.last().is_none_or(|p| *p != pos) {
+                trace.push(pos);
+            }
+        }
+    }
+    pub fn track_keyboard(&mut self, pos: (i32, i32)) {
+        if let Some((trace, InputType::Keyboard)) = &mut self.trace {
             if trace.last().is_none_or(|p| *p != pos) {
                 trace.push(pos);
             }
@@ -38,21 +60,9 @@ impl Tracker {
         self.trace = None;
     }
     fn get_trace(&self) -> Option<Trace> {
-        self.trace.as_ref().map(|trace| {
+        self.trace.as_ref().map(|(trace, _)| {
             if self.pixel_perfect {
-                let mut new = Vec::new();
-                let (mut p0, mut p1) = (trace[0], trace[0]);
-                for (i, p2) in trace.iter().enumerate() {
-                    let p2 = *p2;
-                    if i >= 2 && (p0.0 == p1.0 && p1.1 == p2.1 || p0.1 == p1.1 && p1.0 == p2.0) {
-                        new.pop();
-                        p1 = p2;
-                    } else {
-                        (p0, p1) = (p1, p2);
-                    }
-                    new.push(p2);
-                }
-                new
+                crate::algo::pixel_perfect_filter(trace)
             } else {
                 trace.to_vec()
             }
@@ -61,13 +71,13 @@ impl Tracker {
     fn get_bounds(&self) -> Option<Bounds> {
         self.trace
             .as_ref()
-            .map(|trace| (trace[0], trace[trace.len() - 1]))
+            .map(|(trace, _)| (trace[0], trace[trace.len() - 1]))
     }
     fn get_once(&self) -> Option<Once> {
-        self.trace.as_ref().map(|trace| trace[trace.len() - 1])
+        self.trace.as_ref().map(|(trace, _)| trace[trace.len() - 1])
     }
     pub fn get_dir(&self) -> Option<Dir> {
-        self.trace.as_ref().map(|trace| {
+        self.trace.as_ref().map(|(trace, _)| {
             let (start, end) = (trace[0], trace[trace.len() - 1]);
             (end.0 - start.0, end.1 - start.1)
         })
@@ -78,7 +88,9 @@ impl Tracker {
 pub enum Tool {
     Brush(bool),
     Rect(bool),
+    Ellipse(bool),
     Flood(bool),
+    Line,
     Move,
 }
 
@@ -98,15 +110,18 @@ impl ToolSetting {
 impl Tool {
     fn toggle(&mut self) {
         match self {
-            Tool::Brush(outline) | Tool::Rect(outline) => *outline = !*outline,
+            Tool::Brush(outline) | Tool::Rect(outline) | Tool::Ellipse(outline) => {
+                *outline = !*outline
+            }
             Tool::Flood(discon) => *discon = !*discon,
-            Tool::Move => (),
+            Tool::Line | Tool::Move => (),
         }
     }
     pub fn set_or_toggle(&mut self, tool: Tool) {
         match (&self, &tool) {
             (Tool::Brush(..), Tool::Brush(..))
             | (Tool::Rect(..), Tool::Rect(..))
+            | (Tool::Ellipse(..), Tool::Ellipse(..))
             | (Tool::Flood(..), Tool::Flood(..)) => {
                 self.toggle();
             }
@@ -137,6 +152,13 @@ impl Tool {
                     "fill. rect."
                 }
             }
+            Tool::Ellipse(outline) => {
+                if *outline {
+                    "outl. ellipse"
+                } else {
+                    "fill. ellipse"
+                }
+            }
             Tool::Flood(discon) => {
                 if *discon {
                     "disc. flood"
@@ -144,6 +166,7 @@ impl Tool {
                     "cont. flood"
                 }
             }
+            Tool::Line => "line",
             Tool::Move => "move",
         }
     }
@@ -163,6 +186,13 @@ impl Tool {
                     "fill. rect.".into()
                 }
             }
+            Tool::Ellipse(outline) => {
+                if *outline {
+                    "outl. ellipse".into()
+                } else {
+                    "fill. ellipse".into()
+                }
+            }
             Tool::Flood(discon) => {
                 if *discon {
                     format!("disc. flood [{}]", setting.flood_tolerance)
@@ -170,6 +200,7 @@ impl Tool {
                     format!("cont. flood [{}]", setting.flood_tolerance)
                 }
             }
+            Tool::Line => format!("line {}", setting.brush),
             Tool::Move => "move".into(),
         }
     }
@@ -214,6 +245,14 @@ impl Tool {
                     );
                 }
             }
+            Tool::Ellipse(outline) => {
+                if let Some(bounds) = tracker.get_bounds() {
+                    buffer.preview(
+                        |i, s, sym| crate::tool::ellipse(i, s, bounds, color_mode, sym, *outline),
+                        false,
+                    );
+                }
+            }
             Tool::Flood(discon) => {
                 tracker.get_once().map(|once| {
                     let tolerance = modifier
@@ -227,6 +266,16 @@ impl Tool {
                         false,
                     );
                 });
+            }
+            Tool::Line => {
+                if let Some(bounds) = tracker.get_bounds() {
+                    buffer.preview(
+                        |i, s, sym| {
+                            crate::tool::line(i, s, bounds, color_mode, sym, &tool_setting.brush)
+                        },
+                        false,
+                    );
+                }
             }
             Tool::Move => {
                 if let Some(dir) = tracker.get_dir() {
@@ -258,6 +307,23 @@ impl Tool {
                 if let Some(bounds) = tracker.get_bounds() {
                     buffer.preview_selection(|i, s, sym| {
                         mode.apply(s.clone(), &crate::algo::rect(i, bounds, sym, *outline))
+                    });
+                }
+            }
+            Tool::Ellipse(outline) => {
+                if let Some(bounds) = tracker.get_bounds() {
+                    buffer.preview_selection(|i, s, sym| {
+                        mode.apply(s.clone(), &crate::algo::ellipse(i, bounds, sym, *outline))
+                    });
+                }
+            }
+            Tool::Line => {
+                if let Some(bounds) = tracker.get_bounds() {
+                    buffer.preview_selection(|i, s, sym| {
+                        mode.apply(
+                            s.clone(),
+                            &crate::algo::line(i, bounds, sym, &tool_setting.brush),
+                        )
                     });
                 }
             }
@@ -309,6 +375,27 @@ impl Tool {
                 buffer.edit_selection(
                     &format!("{} selection", self.string_short(),),
                     |i, s, sym| mode.apply(s.clone(), &crate::algo::rect(i, bounds, sym, *outline)),
+                );
+                self.visual_message()
+            }),
+            Tool::Ellipse(outline) => tracker.get_bounds().map(|bounds| {
+                buffer.edit_selection(
+                    &format!("{} selection", self.string_short(),),
+                    |i, s, sym| {
+                        mode.apply(s.clone(), &crate::algo::ellipse(i, bounds, sym, *outline))
+                    },
+                );
+                self.visual_message()
+            }),
+            Tool::Line => tracker.get_bounds().map(|bounds| {
+                buffer.edit_selection(
+                    &format!("{} selection", self.string_short(),),
+                    |i, s, sym| {
+                        mode.apply(
+                            s.clone(),
+                            &crate::algo::line(i, bounds, sym, &tool_setting.brush),
+                        )
+                    },
                 );
                 self.visual_message()
             }),

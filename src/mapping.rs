@@ -6,13 +6,15 @@ use std::collections::{HashMap, HashSet};
 pub enum Action {
     Left, Right, Up, Down,
 
-    Brush, BrushFilled, Flood, FloodAll, RectFilled, RectOutline, Move,
+    Brush, BrushFilled, Flood, FloodAll, RectFilled, RectOutline,
 
-    BrushToggle, FloodToggle, RectToggle,
+    EllipseFilled, EllipseOutline,
 
-    Paste, Yank, Cut, Delete,
+    Line, Move,
 
-    Cancel, Enter,
+    BrushToggle, FloodToggle, RectToggle, EllipseToggle,
+
+    Cancel,
 
     NormalErase, NormalReplace, NormalBlend, NormalToggle,
 
@@ -20,11 +22,15 @@ pub enum Action {
 
     PixelPerfect,
 
-    Normal, Visual, Command,
+    Normal, Visual, Insert, Command,
+
+    Fit,
 
     Go, TabFront, TabBack,
 
     DoCommand(String),
+
+    Nop,
 }
 
 mod action {
@@ -40,19 +46,18 @@ mod action {
                 RectFilled => f.write_str("rect_filled"),
                 RectOutline => f.write_str("rect_outline"),
                 RectToggle => f.write_str("rect_toggle"),
+                EllipseFilled => f.write_str("ellipse_filled"),
+                EllipseOutline => f.write_str("ellipse_outline"),
+                EllipseToggle => f.write_str("ellipse_toggle"),
                 Brush => f.write_str("brush"),
                 BrushFilled => f.write_str("brush_filled"),
                 BrushToggle => f.write_str("brush_toggle"),
                 Flood => f.write_str("flood"),
                 FloodAll => f.write_str("flood_all"),
                 FloodToggle => f.write_str("flood_toggle"),
+                Line => f.write_str("line"),
                 Move => f.write_str("move"),
-                Paste => f.write_str("paste"),
-                Yank => f.write_str("yank"),
-                Cut => f.write_str("cut"),
-                Delete => f.write_str("delete"),
                 Cancel => f.write_str("cancel"),
-                Enter => f.write_str("enter"),
                 PixelPerfect => f.write_str("pixel_perfect"),
                 Normal => f.write_str("normal"),
                 NormalBlend => f.write_str("normal_blend"),
@@ -63,11 +68,14 @@ mod action {
                 VisualAdd => f.write_str("visual_add"),
                 VisualSub => f.write_str("visual_sub"),
                 VisualToggle => f.write_str("visual_toggle"),
+                Insert => f.write_str("insert"),
                 Command => f.write_str("command"),
+                Fit => f.write_str("fit"),
                 Go => f.write_str("go"),
                 TabFront => f.write_str("tab_front"),
                 TabBack => f.write_str("tab_back"),
                 DoCommand(cmd) => f.write_str(&format!(":{cmd}")),
+                Nop => f.write_str("nop"),
             }
         }
     }
@@ -83,19 +91,18 @@ mod action {
                 "rect_filled" | "RectFilled" => RectFilled,
                 "rect_outline" | "RectOutline" => RectOutline,
                 "rect_toggle" | "RectToggle" => RectToggle,
+                "ellipse_filled" | "EllipseFilled" => EllipseFilled,
+                "ellipse_outline" | "EllipseOutline" => EllipseOutline,
+                "ellipse_toggle" | "EllipseToggle" => EllipseToggle,
                 "brush" | "Brush" => Brush,
                 "brush_filled" | "BrushFilled" => BrushFilled,
                 "brush_toggle" | "BrushToggle" => BrushToggle,
                 "flood" | "Flood" => Flood,
                 "flood_all" | "FloodAll" => FloodAll,
                 "flood_toggle" | "FloodToggle" => FloodToggle,
+                "line" | "Line" => Line,
                 "move" | "Move" => Move,
-                "paste" | "Paste" => Paste,
-                "yank" | "Yank" => Yank,
-                "cut" | "Cut" => Cut,
-                "delete" | "Delete" => Delete,
                 "cancel" | "Cancel" => Cancel,
-                "enter" | "Enter" => Enter,
                 "pixel_perfect" | "PixelPerfect" => PixelPerfect,
                 "normal" | "Normal" => Normal,
                 "normal_blend" | "NormalBlend" => NormalBlend,
@@ -106,10 +113,13 @@ mod action {
                 "visual_add" | "VisualAdd" => VisualAdd,
                 "visual_sub" | "VisualSub" => VisualSub,
                 "visual_toggle" | "VisualToggle" => VisualToggle,
+                "insert" | "Insert" => Insert,
                 "command" | "Command" => Command,
+                "fit" | "Fit" => Fit,
                 "go" | "Go" => Go,
                 "tab_front" | "TabFront" => TabFront,
                 "tab_back" | "TabBack" => TabBack,
+                "nop" | "Nop" => Nop,
                 _ => {
                     if let Some(expr) = expr.strip_prefix(':') {
                         DoCommand(expr.into())
@@ -122,26 +132,69 @@ mod action {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub struct Key {
     code: KeyCode,
     ctrl: bool,
     shift: bool,
 }
+
 impl Key {
     pub fn new(code: KeyCode, ctrl: bool, shift: bool) -> Self {
         Key { code, ctrl, shift }
     }
-    pub fn string(&self) -> String {
-        let mut s = String::new();
+}
+
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.ctrl {
-            s.push_str("C-");
+            f.write_str("C-")?;
         }
         if self.shift {
-            s.push_str("S-");
+            f.write_str("S-")?;
         }
-        s.push_str(&keycode::keycode_to_str(self.code).to_ascii_lowercase());
-        s
+        f.write_str(keycode::keycode_to_str(self.code))
+    }
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+pub enum KeyOrChar {
+    Key(Key),
+    Char(char),
+}
+
+impl std::fmt::Display for KeyOrChar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyOrChar::Key(k) => f.write_str(&k.to_string()),
+            KeyOrChar::Char(c) => f.write_str(&format!("'{c}'")),
+        }
+    }
+}
+
+impl std::str::FromStr for KeyOrChar {
+    type Err = String;
+    fn from_str(expr: &str) -> Result<Self, String> {
+        let expr = expr.trim().to_ascii_lowercase();
+        if let Some(ch) = expr.strip_prefix('\'').and_then(|e| e.strip_suffix('\'')) {
+            Ok(KeyOrChar::Char(
+                ch.parse().map_err(|_| "Unknown character")?,
+            ))
+        } else {
+            Ok(KeyOrChar::Key(expr.parse()?))
+        }
+    }
+}
+
+impl From<Key> for KeyOrChar {
+    fn from(val: Key) -> Self {
+        KeyOrChar::Key(val)
+    }
+}
+
+impl From<char> for KeyOrChar {
+    fn from(val: char) -> Self {
+        KeyOrChar::Char(val)
     }
 }
 
@@ -188,6 +241,8 @@ mod keycode {
             "left" => Left,
             "down" => Down,
             "up" => Up,
+            "alt" | "left_alt" => LeftAlt,
+            "alt_gr" | "right_alt" => RightAlt,
             _ => Unknown,
         }
     }
@@ -225,6 +280,8 @@ mod keycode {
             Left => "left",
             Down => "down",
             Up => "up",
+            LeftAlt => "alt",
+            RightAlt => "alt_gr",
 
             _ => "unknown",
         }
@@ -274,8 +331,8 @@ mod keycode {
 
 #[derive(Default)]
 pub struct KeyMap {
-    pub normal_map: HashMap<Key, Vec<Action>>,
-    pub visual_map: HashMap<Key, Vec<Action>>,
+    pub normal_map: HashMap<KeyOrChar, (Vec<Action>, Vec<Action>)>,
+    pub visual_map: HashMap<KeyOrChar, (Vec<Action>, Vec<Action>)>,
 }
 
 impl KeyMap {
@@ -287,10 +344,10 @@ impl KeyMap {
             if matches!(self.visual_map.get(k), Some(visual_actions) if visual_actions == normal_actions)
             {
                 both.insert(k);
-                let k = k.string();
-                line.push_str(&format!("map {k}{}", " ".repeat(10 - k.chars().count())));
+                let k = k.to_string();
+                line.push_str(&format!("map {k}{}", " ".repeat(17 - k.chars().count())));
             } else {
-                let k = k.string();
+                let k = k.to_string();
                 line.push_str(&format!(
                     "map/normal {k}{}",
                     " ".repeat(10 - k.chars().count())
@@ -298,46 +355,70 @@ impl KeyMap {
             }
             line.push_str(
                 &normal_actions
+                    .0
                     .iter()
                     .map(|a| a.to_string())
                     .collect::<Vec<_>>()
                     .join(" THEN "),
             );
+            if !normal_actions.1.is_empty() {
+                line.push_str(" KEYUP ");
+                line.push_str(
+                    &normal_actions
+                        .1
+                        .iter()
+                        .map(|a| a.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" THEN "),
+                );
+            }
             text.push(line);
         }
         for (k, visual_actions) in &self.visual_map {
             if !both.contains(k) {
                 let mut line = String::new();
-                let k = k.string();
+                let k = k.to_string();
                 line.push_str(&format!(
                     "map/visual {k}{}",
                     " ".repeat(10 - k.chars().count())
                 ));
                 line.push_str(
                     &visual_actions
+                        .0
                         .iter()
                         .map(|a| a.to_string())
                         .collect::<Vec<_>>()
                         .join(" THEN "),
                 );
+                if !visual_actions.1.is_empty() {
+                    line.push_str(" KEYUP ");
+                    line.push_str(
+                        &visual_actions
+                            .1
+                            .iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" THEN "),
+                    );
+                }
                 text.push(line);
             }
         }
         text.sort_by_key(|s| s.to_ascii_lowercase());
         text.join("\n")
     }
-    pub fn get_normal(&self, key: Key) -> &[Action] {
-        if let Some(actions) = self.normal_map.get(&key).as_ref() {
-            &actions[..]
+    pub fn get_normal(&self, key: impl Into<KeyOrChar>) -> (&[Action], &[Action]) {
+        if let Some((down, up)) = self.normal_map.get(&key.into()).as_ref() {
+            (&down[..], &up[..])
         } else {
-            &[]
+            (&[], &[])
         }
     }
-    pub fn get_visual(&self, key: Key) -> &[Action] {
-        if let Some(actions) = self.visual_map.get(&key).as_ref() {
-            &actions[..]
+    pub fn get_visual(&self, key: impl Into<KeyOrChar>) -> (&[Action], &[Action]) {
+        if let Some((down, up)) = self.visual_map.get(&key.into()).as_ref() {
+            (&down[..], &up[..])
         } else {
-            &[]
+            (&[], &[])
         }
     }
 }

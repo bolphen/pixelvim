@@ -34,6 +34,7 @@ pub fn init(config: Option<PathBuf>, paths: Vec<PathBuf>) {
         high_dpi: true,
         platform: miniquad::conf::Platform {
             blocking_event_loop: true,
+            linux_x11_wm_class: "pixelvim",
             ..Default::default()
         },
         ..Default::default()
