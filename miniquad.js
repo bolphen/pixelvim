@@ -19,10 +19,6 @@ var plugins = [];
 var wasm_memory;
 var animation_frame_timeout;
 
-// if true, requestAnimationFrame will only be called from "schedule_update"
-// if false, requestAnimationFrame will be called at the end of each frame
-var blocking_event_loop = false;
-
 function init_webgl(version) {
     if (version == 1) {
         gl = canvas.getContext("webgl");
@@ -420,8 +416,9 @@ var Module;
 var wasm_exports;
 
 function resize(canvas, on_resize) {
-    var displayWidth = canvas.clientWidth;
-    var displayHeight = canvas.clientHeight;
+    var dpr = dpi_scale();
+    var displayWidth = canvas.clientWidth * dpr;
+    var displayHeight = canvas.clientHeight * dpr;
 
     if (canvas.width != displayWidth ||
         canvas.height != displayHeight) {
@@ -609,8 +606,8 @@ function texture_size(internalFormat, width, height) {
 function mouse_relative_position(clientX, clientY) {
     var targetRect = canvas.getBoundingClientRect();
 
-    var x = (clientX - targetRect.left);
-    var y = (clientY - targetRect.top);
+    var x = (clientX - targetRect.left) * dpi_scale();
+    var y = (clientY - targetRect.top) * dpi_scale();
 
     return { x, y };
 }
@@ -1421,11 +1418,10 @@ var importObject = {
             }
             delete FS.loaded_files[file_id];
         },
-        fs_save_file: function (ptr, len, ptr1, len1, ptr2, len2) {
+        fs_save_file: function (ptr, len, ptr1, len1) {
             var dest = new Uint8Array(wasm_memory.buffer, ptr, len);
-            var type = UTF8ToString(ptr1, len1);
-            var name = UTF8ToString(ptr2, len2);
-            var blob = new Blob([dest], {type: type});
+            var name = UTF8ToString(ptr1, len1);
+            var blob = new Blob([dest]);
             saveAs(blob, name);
         },
         sapp_set_cursor_grab: function (grab) {
