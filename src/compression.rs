@@ -23,10 +23,11 @@ pub trait Compressible: Sized {
     fn to_bytes(&self) -> Vec<u8>;
     fn from_bytes(bytes: &[u8]) -> Result<Self, String>;
     fn compress(&self) -> Compressed<Self> {
-        let mut encoder = snap::write::FrameEncoder::new(Vec::new());
+        use std::io::Read;
         let input = self.to_bytes();
-        std::io::copy(&mut input.as_slice(), &mut encoder).expect("");
-        let data = encoder.into_inner().expect("");
+        let mut encoder = flate2::read::ZlibEncoder::new(&input[..], flate2::Compression::fast());
+        let mut data = Vec::new();
+        encoder.read_to_end(&mut data).expect("Compression failed");
         Compressed {
             data,
             phantom: PhantomData,
@@ -47,9 +48,12 @@ impl<T: SerBin + DeBin> Compressible for T {
 
 impl<T: Compressible> Compressed<T> {
     pub fn decompress(&self) -> Result<T, String> {
-        let mut decoder = snap::read::FrameDecoder::new(&self.data[..]);
+        use std::io::Read;
+        let mut decoder = flate2::read::ZlibDecoder::new(&self.data[..]);
         let mut output = Vec::new();
-        std::io::copy(&mut decoder, &mut output).map_err(|e| e.to_string())?;
+        decoder
+            .read_to_end(&mut output)
+            .map_err(|e| e.to_string())?;
         T::from_bytes(&output)
     }
 }

@@ -1,11 +1,14 @@
-use super::buffer::{Buffer, ImgIndex, PasteFrom, RegIndex};
+use super::buffer::{Buffer, FrameId, ImgIndex, PasteFrom, RegIndex};
 use super::register::Register;
 use super::{Message, Modifier, NormalMode, VisualMode};
-use crate::algo::{Brush, Selection};
+use crate::algo::Brush;
 use crate::color::{Color, ColorMode};
+use crate::graphics::Graphics;
 use crate::image::Image;
+use crate::selection::Selection;
+use std::collections::HashMap;
 
-type Trace = Vec<(i32, i32)>;
+// type Trace = Vec<(i32, i32)>;
 type Bounds = ((i32, i32), (i32, i32));
 type Once = (i32, i32);
 type Dir = (i32, i32);
@@ -15,9 +18,83 @@ pub enum InputType {
     Keyboard,
     Mouse,
 }
+
+enum Staged {
+    All(Selection),
+    PerFrame(FrameId, HashMap<FrameId, Selection>),
+}
+
+impl Staged {
+    fn new(frame: Option<FrameId>) -> Self {
+        if let Some(id) = frame {
+            Staged::PerFrame(id, HashMap::new())
+        } else {
+            Staged::All(Selection::new())
+        }
+    }
+    fn frame_tracked(&self) -> Option<FrameId> {
+        match self {
+            Staged::All(_) => None,
+            Staged::PerFrame(id, _) => Some(*id),
+        }
+    }
+    fn stage(&mut self, new: &Selection) {
+        match self {
+            Staged::All(s) => s.extend(new),
+            Staged::PerFrame(id, h) => h.entry(*id).or_insert_with(Selection::new).extend(new),
+        }
+    }
+    fn get(&self) -> &Selection {
+        match self {
+            Staged::All(s) => s,
+            Staged::PerFrame(id, h) => h.get(id).unwrap(),
+        }
+    }
+    fn clear(&mut self) {
+        match self {
+            Staged::All(s) => s.clear(),
+            Staged::PerFrame(_, h) => h.clear(),
+        }
+    }
+}
+
+struct TraceRecord {
+    trace: Vec<(i32, i32)>,
+    input: InputType,
+    used: usize,
+    staged: Staged,
+}
+impl TraceRecord {
+    fn trim(&mut self) {
+        self.trace.drain(0..self.used);
+        self.used = 0;
+    }
+    fn set_frame(&mut self, frame: FrameId) {
+        if let Staged::PerFrame(id, _) = &mut self.staged {
+            *id = frame;
+        }
+    }
+    fn push(&mut self, pos: (i32, i32)) {
+        if self.trace.last().is_none_or(|p| *p != pos) {
+            self.trace.push(pos);
+        }
+    }
+    fn use_trace(&mut self, keep: usize) -> &[(i32, i32)] {
+        let traces = &self.trace[self.used..];
+        self.used = self.trace.len().saturating_sub(keep + 1);
+        traces
+    }
+    fn stage(&mut self, new: &Selection) {
+        self.staged.stage(new)
+    }
+    fn staged(&self) -> &Selection {
+        self.staged.get()
+    }
+}
+
 #[derive(Default)]
 pub struct Tracker {
-    trace: Option<(Vec<(i32, i32)>, InputType)>,
+    trace: Option<TraceRecord>,
     pub pixel_perfect: bool,
 }
 impl Tracker {
@@ -27,60 +104,73 @@ impl Tracker {
     pub fn is_mouse_in_use(&self) -> bool {
         self.trace
             .as_ref()
-            .is_some_and(|(_, input)| matches!(input, InputType::Mouse))
+            .is_some_and(|t| matches!(t.input, InputType::Mouse))
     }
     pub fn is_keyboard_in_use(&self) -> bool {
         self.trace
             .as_ref()
-            .is_some_and(|(_, input)| matches!(input, InputType::Keyboard))
+            .is_some_and(|t| matches!(t.input, InputType::Keyboard))
     }
-    pub fn start(&mut self, pos: (i32, i32), input: InputType) {
-        self.trace = Some((vec![pos], input));
+    pub fn start(&mut self, pos: (i32, i32), input: InputType, frame: Option<FrameId>) {
+        self.trace = Some(TraceRecord {
+            trace: vec![pos],
+            input,
+            used: 0,
+            staged: Staged::new(frame),
+        });
+    }
+    pub fn frame_tracked(&self) -> Option<FrameId> {
+        self.trace.as_ref()?.staged.frame_tracked()
     }
     pub fn trim(&mut self) {
-        if let Some((trace, _)) = &mut self.trace {
-            trace.drain(0..trace.len() - 1);
-        }
+        self.trace.as_mut().map(|trace| trace.trim());
+    }
+    pub fn set_frame(&mut self, frame: FrameId) {
+        self.trace.as_mut().map(|trace| trace.set_frame(frame));
     }
     pub fn track_mouse(&mut self, pos: (i32, i32)) {
-        if let Some((trace, InputType::Mouse)) = &mut self.trace {
-            if trace.last().is_none_or(|p| *p != pos) {
+        self.trace.as_mut().map(|trace| {
+            if trace.input == InputType::Mouse {
                 trace.push(pos);
             }
-        }
+        });
     }
     pub fn track_keyboard(&mut self, pos: (i32, i32)) {
-        if let Some((trace, InputType::Keyboard)) = &mut self.trace {
-            if trace.last().is_none_or(|p| *p != pos) {
+        self.trace.as_mut().map(|trace| {
+            if trace.input == InputType::Keyboard {
                 trace.push(pos);
             }
-        }
+        });
     }
     pub fn stop(&mut self) {
         self.trace = None;
     }
-    fn get_trace(&self) -> Option<Trace> {
-        self.trace.as_ref().map(|(trace, _)| {
-            if self.pixel_perfect {
-                crate::algo::pixel_perfect_filter(trace)
-            } else {
-                trace.to_vec()
-            }
-        })
+    pub fn reset_used(&mut self) {
+        self.trace.as_mut().map(|trace| {
+            trace.used = 0;
+            trace.staged.clear();
+        });
     }
+    // fn get_trace(&mut self) -> Option<Trace> {
+    //     let trace = &self.trace.as_ref()?.trace;
+    //     Some(if self.pixel_perfect {
+    //         crate::algo::pixel_perfect_filter(trace)
+    //     } else {
+    //         trace.to_vec()
+    //     })
+    // }
     fn get_bounds(&self) -> Option<Bounds> {
-        self.trace
-            .as_ref()
-            .map(|(trace, _)| (trace[0], trace[trace.len() - 1]))
+        let trace = &self.trace.as_ref()?.trace;
+        Some((trace[0], trace[trace.len() - 1]))
     }
     fn get_once(&self) -> Option<Once> {
-        self.trace.as_ref().map(|(trace, _)| trace[trace.len() - 1])
+        let trace = &self.trace.as_ref()?.trace;
+        Some(trace[trace.len() - 1])
     }
     pub fn get_dir(&self) -> Option<Dir> {
-        self.trace.as_ref().map(|(trace, _)| {
-            let (start, end) = (trace[0], trace[trace.len() - 1]);
-            (end.0 - start.0, end.1 - start.1)
-        })
+        let trace = &self.trace.as_ref()?.trace;
+        let (start, end) = (trace[0], trace[trace.len() - 1]);
+        Some((end.0 - start.0, end.1 - start.1))
     }
 }
 
@@ -92,6 +182,7 @@ pub enum Tool {
     Flood(bool),
     Line,
     Move,
+    Rotate,
 }
 
 pub struct ToolSetting {
@@ -114,7 +205,7 @@ impl Tool {
                 *outline = !*outline
             }
             Tool::Flood(discon) => *discon = !*discon,
-            Tool::Line | Tool::Move => (),
+            Tool::Line | Tool::Move | Tool::Rotate => (),
         }
     }
     pub fn set_or_toggle(&mut self, tool: Tool) {
@@ -168,6 +259,7 @@ impl Tool {
             }
             Tool::Line => "line",
             Tool::Move => "move",
+            Tool::Rotate => "rotate",
         }
     }
     pub fn string(&self, setting: &ToolSetting) -> String {
@@ -202,55 +294,140 @@ impl Tool {
             }
             Tool::Line => format!("line {}", setting.brush),
             Tool::Move => "move".into(),
+            Tool::Rotate => "rotate".into(),
         }
     }
+}
+macro_rules! draw_diff {
+    ($diff:expr, $image:expr, $graphics:expr, $color_mode:expr $(,)*) => {
+        (!$diff.is_empty()).then(|| {
+            if let (Some(graphics), ColorMode::Blend(color, _)) = ($graphics, $color_mode) {
+                let source = $diff
+                    .crop($image.size())
+                    .apply(|b| if *b { color } else { (0, 0, 0, 0).into() });
+                graphics.render($image, &source)
+            } else {
+                let mut new = $image.clone();
+                for (x, y) in $diff {
+                    $color_mode.apply(new.get_unchecked_mut(x, y));
+                }
+                new
+            }
+        })
+    };
+}
+macro_rules! draw {
+    (
+        $diff:expr,
+        $image:expr,
+        $selection:expr,
+        $graphics:expr,
+        $color_mode:expr $(,)*
+    ) => {{
+        let mut diff = $diff;
+        diff.retain(|(x, y)| {
+            $image.is_in_bound(x, y) && ($selection.is_empty() || $selection.contains((x, y)))
+        });
+        draw_diff!(diff, $image, $graphics, $color_mode)
+    }};
+}
+impl Tool {
     pub fn normal_preview(
         &self,
-        tracker: &Tracker,
+        tracker: &mut Tracker,
         buffer: &mut Buffer,
         mode: NormalMode,
         color: Color,
         modifier: Option<Modifier>,
         tool_setting: &ToolSetting,
+        mut graphics: Option<&mut Graphics>,
     ) {
         let color_mode = match mode {
             NormalMode::Blend(srgb) => ColorMode::Blend(color, srgb),
             NormalMode::Replace => ColorMode::Set(color),
             NormalMode::Erase => ColorMode::Clear,
         };
+        let size = buffer.size();
+        let brush = &tool_setting.brush;
         match self {
             Tool::Brush(outline) => {
-                if let Some(trace) = tracker.get_trace() {
-                    buffer.preview(
-                        |i, s, sym| {
-                            crate::tool::brush(
-                                i,
-                                s,
-                                trace,
-                                color_mode,
-                                sym,
-                                &tool_setting.brush,
-                                *outline,
-                            )
-                        },
-                        *outline && !tracker.pixel_perfect,
-                    );
+                if let Some(record) = &mut tracker.trace {
+                    use crate::algo::brush as brush_fn;
+                    buffer.preview(|image, selection, sym| {
+                        if *outline {
+                            if !tracker.pixel_perfect {
+                                let trace = record.use_trace(0);
+                                let new = brush_fn(size, trace, sym, brush, true);
+                                record.stage(&new);
+                                let diff = record.staged().clone();
+                                draw!(diff, image, selection, graphics.as_mut(), color_mode)
+                            } else {
+                                let trace = record.use_trace(1);
+                                let trace_f = crate::algo::pixel_perfect_filter(trace);
+                                let len = trace_f.len();
+                                if len > 1 && trace_f[len - 2] != trace[trace.len() - 2] {
+                                    record.used -= 1;
+                                }
+                                let d1 = brush_fn(size, &trace_f[..len - 1], sym, brush, true);
+                                record.stage(&d1);
+                                let mut diff = record.staged().clone();
+                                if len > 1 {
+                                    let d2 = brush_fn(size, &trace_f[len - 2..], sym, brush, true);
+                                    diff.extend(d2);
+                                }
+                                draw!(diff, image, selection, graphics.as_mut(), color_mode)
+                            }
+                        } else {
+                            let bind;
+                            let trace = if tracker.pixel_perfect {
+                                bind = crate::algo::pixel_perfect_filter(&record.trace);
+                                &bind
+                            } else {
+                                &record.trace
+                            };
+                            let diff = brush_fn(size, trace, sym, brush, false);
+                            draw!(diff, image, selection, graphics.as_mut(), color_mode)
+                        }
+                    });
                 }
             }
             Tool::Rect(outline) => {
                 if let Some(bounds) = tracker.get_bounds() {
-                    buffer.preview(
-                        |i, s, sym| crate::tool::rect(i, s, bounds, color_mode, sym, *outline),
-                        false,
-                    );
+                    buffer.preview(|image, selection, sym| {
+                        draw!(
+                            crate::algo::rect(size, bounds, sym, *outline),
+                            image,
+                            selection,
+                            graphics.as_mut(),
+                            color_mode,
+                        )
+                    });
                 }
             }
             Tool::Ellipse(outline) => {
                 if let Some(bounds) = tracker.get_bounds() {
-                    buffer.preview(
-                        |i, s, sym| crate::tool::ellipse(i, s, bounds, color_mode, sym, *outline),
-                        false,
-                    );
+                    buffer.preview(|image, selection, sym| {
+                        draw!(
+                            crate::algo::ellipse(size, bounds, sym, *outline),
+                            image,
+                            selection,
+                            graphics.as_mut(),
+                            color_mode,
+                        )
+                    });
+                }
+            }
+            Tool::Line => {
+                if let Some(bounds) = tracker.get_bounds() {
+                    buffer.preview(|image, selection, sym| {
+                        draw!(
+                            crate::algo::line(size, bounds, sym, brush),
+                            image,
+                            selection,
+                            graphics.as_mut(),
+                            color_mode,
+                        )
+                    });
                 }
             }
             Tool::Flood(discon) => {
@@ -259,71 +436,103 @@ impl Tool {
                         .and_then(Modifier::to_i32)
                         .unwrap_or(tool_setting.flood_tolerance as _)
                         .min(255) as u8;
-                    buffer.preview(
-                        |i, s, sym| {
-                            crate::tool::flood(i, s, once, tolerance, color_mode, sym, *discon)
-                        },
-                        false,
-                    );
+                    buffer.preview(|image, selection, sym| {
+                        let diff = crate::algo::flood(
+                            image,
+                            (!selection.is_empty()).then_some(selection),
+                            once,
+                            tolerance,
+                            sym,
+                            *discon,
+                        );
+                        draw_diff!(diff, image, graphics.as_mut(), color_mode)
+                    });
                 });
-            }
-            Tool::Line => {
-                if let Some(bounds) = tracker.get_bounds() {
-                    buffer.preview(
-                        |i, s, sym| {
-                            crate::tool::line(i, s, bounds, color_mode, sym, &tool_setting.brush)
-                        },
-                        false,
-                    );
-                }
             }
             Tool::Move => {
                 if let Some(dir) = tracker.get_dir() {
-                    buffer.preview(|i, _s, _sym| Some(crate::tool::r#move(i, dir)), false);
+                    buffer.preview(|i, _s, _sym| Some(crate::tool::r#move(i, dir)));
+                }
+            }
+            Tool::Rotate => {
+                if let Some(bounds) = tracker.get_bounds() {
+                    buffer.preview(|i, _s, _sym| Some(crate::tool::rotate_bounds(i, bounds)));
                 }
             }
         }
     }
     pub fn visual_preview(
         &self,
-        tracker: &Tracker,
+        tracker: &mut Tracker,
         buffer: &mut Buffer,
         mode: VisualMode,
         modifier: Option<Modifier>,
         tool_setting: &ToolSetting,
     ) {
+        let size = buffer.size();
+        let brush = &tool_setting.brush;
         match self {
             Tool::Brush(outline) => {
-                if let Some(trace) = tracker.get_trace() {
-                    buffer.preview_selection(|i, s, sym| {
-                        mode.apply(
-                            s.clone(),
-                            &crate::algo::brush(i, trace, sym, &tool_setting.brush, *outline),
-                        )
+                if let Some(record) = &mut tracker.trace {
+                    use crate::algo::brush as brush_fn;
+                    buffer.preview_selection(|_i, s, sym| {
+                        let diff = if *outline {
+                            if !tracker.pixel_perfect {
+                                let trace = record.use_trace(0);
+                                let new = brush_fn(size, trace, sym, brush, true);
+                                record.stage(&new);
+                                record.staged().clone()
+                            } else {
+                                let trace = record.use_trace(1);
+                                let trace_f = crate::algo::pixel_perfect_filter(trace);
+                                let len = trace_f.len();
+                                if len > 1 && trace_f[len - 2] != trace[trace.len() - 2] {
+                                    record.used -= 1;
+                                }
+                                let d1 = brush_fn(size, &trace_f[..len - 1], sym, brush, true);
+                                record.stage(&d1);
+                                let mut diff = record.staged().clone();
+                                if len > 1 {
+                                    let d2 = brush_fn(size, &trace_f[len - 2..], sym, brush, true);
+                                    diff.extend(d2);
+                                }
+                                diff
+                            }
+                        } else {
+                            let bind;
+                            let trace = if tracker.pixel_perfect {
+                                bind = crate::algo::pixel_perfect_filter(&record.trace);
+                                &bind
+                            } else {
+                                &record.trace
+                            };
+                            brush_fn(size, trace, sym, brush, false)
+                        };
+                        mode.apply(s.clone(), &diff)
                     });
                 }
             }
             Tool::Rect(outline) => {
                 if let Some(bounds) = tracker.get_bounds() {
-                    buffer.preview_selection(|i, s, sym| {
-                        mode.apply(s.clone(), &crate::algo::rect(i, bounds, sym, *outline))
+                    buffer.preview_selection(|_i, s, sym| {
+                        mode.apply(s.clone(), &crate::algo::rect(size, bounds, sym, *outline))
                     });
                 }
             }
             Tool::Ellipse(outline) => {
                 if let Some(bounds) = tracker.get_bounds() {
-                    buffer.preview_selection(|i, s, sym| {
-                        mode.apply(s.clone(), &crate::algo::ellipse(i, bounds, sym, *outline))
+                    buffer.preview_selection(|_i, s, sym| {
+                        mode.apply(
+                            s.clone(),
+                            &crate::algo::ellipse(size, bounds, sym, *outline),
+                        )
                     });
                 }
             }
             Tool::Line => {
                 if let Some(bounds) = tracker.get_bounds() {
-                    buffer.preview_selection(|i, s, sym| {
-                        mode.apply(
-                            s.clone(),
-                            &crate::algo::line(i, bounds, sym, &tool_setting.brush),
-                        )
+                    buffer.preview_selection(|_i, s, sym| {
+                        mode.apply(s.clone(), &crate::algo::line(size, bounds, sym, brush))
                     });
                 }
             }
@@ -348,87 +557,8 @@ impl Tool {
                     })
                 });
             }
-        }
-    }
-    pub fn visual_use(
-        &mut self,
-        tracker: &Tracker,
-        buffer: &mut Buffer,
-        mode: VisualMode,
-        modifier: Option<Modifier>,
-        tool_setting: &ToolSetting,
-    ) -> Option<Message> {
-        match &self {
-            Tool::Brush(outline) => tracker.get_trace().map(|trace| {
-                buffer.edit_selection(
-                    &format!("{} selection", self.string_short(),),
-                    |i, s, sym| {
-                        mode.apply(
-                            s.clone(),
-                            &crate::algo::brush(i, trace, sym, &tool_setting.brush, *outline),
-                        )
-                    },
-                );
-                self.visual_message()
-            }),
-            Tool::Rect(outline) => tracker.get_bounds().map(|bounds| {
-                buffer.edit_selection(
-                    &format!("{} selection", self.string_short(),),
-                    |i, s, sym| mode.apply(s.clone(), &crate::algo::rect(i, bounds, sym, *outline)),
-                );
-                self.visual_message()
-            }),
-            Tool::Ellipse(outline) => tracker.get_bounds().map(|bounds| {
-                buffer.edit_selection(
-                    &format!("{} selection", self.string_short(),),
-                    |i, s, sym| {
-                        mode.apply(s.clone(), &crate::algo::ellipse(i, bounds, sym, *outline))
-                    },
-                );
-                self.visual_message()
-            }),
-            Tool::Line => tracker.get_bounds().map(|bounds| {
-                buffer.edit_selection(
-                    &format!("{} selection", self.string_short(),),
-                    |i, s, sym| {
-                        mode.apply(
-                            s.clone(),
-                            &crate::algo::line(i, bounds, sym, &tool_setting.brush),
-                        )
-                    },
-                );
-                self.visual_message()
-            }),
-            Tool::Flood(discon) => tracker.get_once().map(|once| {
-                let tolerance = modifier
-                    .and_then(Modifier::to_i32)
-                    .unwrap_or(tool_setting.flood_tolerance as _)
-                    .min(255) as u8;
-                buffer.edit_selection(
-                    &format!("{} selection", self.string_short(),),
-                    |i, s, sym| {
-                        mode.apply(
-                            s.clone(),
-                            &crate::algo::flood(i, None, once, tolerance, sym, *discon),
-                        )
-                    },
-                );
-                self.visual_message()
-            }),
-            Tool::Move => {
-                if buffer.selection().is_empty() {
-                    Some(Message::error("Empty selection"))
-                } else {
-                    tracker.get_dir().map(|dir| {
-                        (dir != (0, 0)).then(|| {
-                            buffer.edit_selection(
-                                &format!("{} selection", self.string_short(),),
-                                |_i, s, _sym| crate::algo::r#move(s, dir),
-                            );
-                            self.visual_message()
-                        })
-                    })?
-                }
+            Tool::Rotate => {
+                // TODO
             }
         }
     }
@@ -465,7 +595,7 @@ impl Tool {
     pub fn normal_message(&self) -> Message {
         Message::normal(&format!("Used {}", self.string_short()))
     }
-    fn visual_message(&self) -> Message {
+    pub fn visual_message(&self) -> Message {
         Message::normal(&format!("Used {} selection", self.string_short()))
     }
 }
@@ -475,24 +605,32 @@ fn _paste(
     image: &Image,
     mut offset: (i32, i32),
     mode: NormalMode,
+    graphics: Option<&mut Graphics>,
 ) -> (Image, Selection) {
     offset.0 += register.offset.0;
     offset.1 += register.offset.1;
-    let mut new = image.clone();
-    for x in 0..register.width() as i32 {
-        for y in 0..register.height() as i32 {
-            if register.selection.contains(&(x, y)) {
-                new.get_mut(x + offset.0, y + offset.1).map(|c| {
-                    let color = *register.content.get_unchecked(x, y);
-                    match mode {
-                        NormalMode::Blend(srgb) => *c = c.blend(color, srgb),
-                        NormalMode::Replace => *c = color,
-                        NormalMode::Erase => *c = (0, 0, 0, 0).into(),
-                    }
-                });
+    let new = if let (Some(graphics), NormalMode::Blend(_)) = (graphics, mode) {
+        let mut source = image.blank();
+        register.content.blit(&mut source, offset.0, offset.1);
+        graphics.render(image, &source)
+    } else {
+        let mut new = image.clone();
+        for x in 0..register.width() as i32 {
+            for y in 0..register.height() as i32 {
+                if register.selection.contains((x, y)) {
+                    new.get_mut(x + offset.0, y + offset.1).map(|c| {
+                        let color = *register.content.get_unchecked(x, y);
+                        match mode {
+                            NormalMode::Blend(srgb) => *c = c.blend(color, srgb),
+                            NormalMode::Replace => *c = color,
+                            NormalMode::Erase => *c = (0, 0, 0, 0).into(),
+                        }
+                    });
+                }
             }
         }
-    }
+        new
+    };
     (new, crate::algo::r#move(&register.selection, offset))
 }
 
@@ -502,8 +640,9 @@ pub fn paste_preview(
     image: &Image,
     offset: (i32, i32),
     mode: NormalMode,
+    graphics: Option<&mut Graphics>,
 ) {
-    buffer.preview_both(|_i, _s, _sym| _paste(register, image, offset, mode));
+    buffer.preview_both(|_i, _s, _sym| _paste(register, image, offset, mode, graphics));
 }
 
 pub fn paste(
@@ -513,6 +652,7 @@ pub fn paste(
     img_idx: Option<ImgIndex>,
     offset: Option<(i32, i32)>,
     mode: NormalMode,
+    graphics: Option<&mut Graphics>,
 ) -> (Image, ImgIndex, RegIndex) {
     let (name, offset) = match offset {
         Some(offset) => ("move", offset),
@@ -520,7 +660,7 @@ pub fn paste(
     };
     let img_idx = img_idx.unwrap_or(buffer.img_idx());
     let image = buffer.session.image_from_index(img_idx);
-    let (pasted, selection) = _paste(register, &image, offset, mode);
+    let (pasted, selection) = _paste(register, &image, offset, mode, graphics);
     let reg_idx = buffer.paste(name, pasted, selection, from, img_idx, offset);
     (image, img_idx, reg_idx)
 }

@@ -2,10 +2,10 @@ use nanoserde::{DeBin, SerBin};
 use std::collections::HashMap;
 
 use super::register::Register;
-use crate::algo::Selection;
 use crate::color::Color;
 use crate::compression::{Compressed, Compressible};
 use crate::image::{Image, Symmetry};
+use crate::selection::Selection;
 
 #[derive(SerBin, DeBin)]
 pub struct History {
@@ -236,7 +236,7 @@ pub struct UndoRedoResult {
 
 impl History {
     pub fn new(images: Vec<Compressed<Image>>, layers: Vec<Vec<Image>>, delay: Vec<u32>) -> Self {
-        let current_selection = Selection::new();
+        let current_selection = Selection::with_capacity(layers[0][0].size());
         let n = layers.len();
         let m = layers[0].len();
         History {
@@ -660,8 +660,8 @@ impl Session {
         // do software merge
         let merged = (0..self.frames().len())
             .map(|f| {
-                let mut new = self.layer_image(layer - count, f).clone();
-                for j in 1..=count {
+                let mut new = self.layer_image(layer - count, f).blank();
+                for j in 0..=count {
                     let l = layer - count + j;
                     if self.is_visible(self.layer_id(l)) {
                         let upper = self.layer_image(l, f);
@@ -753,17 +753,20 @@ impl Session {
         let edit = EditBuilder::new("delete frame".into(), layer_info, frame_info);
         self.history.insert_edit(edit);
     }
-    pub fn slice(&mut self, sliced: Vec<Vec<Image>>) {
+    pub fn restructure_frames(&mut self, name: &str, new_frames: Vec<Vec<Image>>) {
         let mut layer_info = self.history.current_edit().layer_info.clone();
         let mut frame_info = self.history.current_edit().frame_info.clone();
-        self.history
-            ._delete_frame(0, &mut layer_info, &mut frame_info);
-        for frame in sliced.into_iter().rev() {
+        while !frame_info.frames.is_empty() {
+            self.history
+                ._delete_frame(0, &mut layer_info, &mut frame_info);
+        }
+        // new_frames are transposed
+        for frame in new_frames.into_iter().rev() {
             self.history
                 ._new_frame(0, Some(frame), 100, &mut layer_info, &mut frame_info);
         }
         self.current_frame = frame_info.current_frame;
-        let edit = EditBuilder::new("slice".into(), layer_info, frame_info);
+        let edit = EditBuilder::new(name.into(), layer_info, frame_info);
         self.history.insert_edit(edit);
     }
 }

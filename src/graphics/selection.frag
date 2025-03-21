@@ -8,7 +8,7 @@ uniform vec2 size;
 uniform float time;
 
 float tex(float x, float y) {
-    return texture2D(texture, vec2(x, y)).r;
+    return texture2D(texture, vec2(x, y)).a;
 }
 
 void main() {

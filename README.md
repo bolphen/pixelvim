@@ -1,4 +1,4 @@
-# <img width="48" height="48" align="top" src="https://raw.githubusercontent.com/bolphen/pixelvim/release/assets/icon.png"> pixelvim
+# <img width="48" height="48" align="top" src="https://raw.githubusercontent.com/bolphen/pixelvim/release/assets/icon64x64.png"> pixelvim
 `pixelvim` is a pixel editor inspired by the `vim` text editor, with an
 emphasis on keyboard interaction. It also aims to be feature-rich,
 customizable, and extendable via user scripts.
@@ -39,10 +39,17 @@ are encouraged to back up your works.**
     - `:run script.lua` is a command so it can be mapped (or even chained) to a
       key
 
-- Data recovery from swap file in case of crashes
+- Misc
+    - Data recovery from swap file in case of crashes
+    - Read / write png, gif, and aseprite images
+    - Native Wayland support on Linux
 
-## Build
-Clone the repo
+
+## Build & Installation
+`x86_64` binaries for Linux, MacOS, and Windows are available on the [releases
+page](https://github.com/bolphen/pixelvim/releases).
+
+To build it from source, first clone the repo
 ```
 git clone https://github.com/bolphen/pixelvim
 cd pixelvim
@@ -55,6 +62,8 @@ Build and install to `.cargo/bin`
 ```
 cargo install --path .
 ```
+It's possible to disable lua extensions by using the `--no-default-features`
+flag.
 
 ## Plans
 I built this mainly for personal use, and I still have several ideas that I

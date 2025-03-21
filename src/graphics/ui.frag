@@ -2,9 +2,9 @@
 precision lowp float;
 
 varying vec2 uv;
+varying vec4 fg;
+varying vec4 bg;
 uniform sampler2D texture;
-uniform vec4 fg;
-uniform vec4 bg;
 
 void main() {
     vec4 color = texture2D(texture, uv);

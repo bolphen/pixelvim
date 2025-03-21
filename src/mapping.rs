@@ -10,7 +10,7 @@ pub enum Action {
 
     EllipseFilled, EllipseOutline,
 
-    Line, Move,
+    Line, Move, Rotate,
 
     BrushToggle, FloodToggle, RectToggle, EllipseToggle,
 
@@ -57,6 +57,7 @@ mod action {
                 FloodToggle => f.write_str("flood_toggle"),
                 Line => f.write_str("line"),
                 Move => f.write_str("move"),
+                Rotate => f.write_str("rotate"),
                 Cancel => f.write_str("cancel"),
                 PixelPerfect => f.write_str("pixel_perfect"),
                 Normal => f.write_str("normal"),
@@ -102,6 +103,7 @@ mod action {
                 "flood_toggle" | "FloodToggle" => FloodToggle,
                 "line" | "Line" => Line,
                 "move" | "Move" => Move,
+                "rotate" | "Rotate" => Rotate,
                 "cancel" | "Cancel" => Cancel,
                 "pixel_perfect" | "PixelPerfect" => PixelPerfect,
                 "normal" | "Normal" => Normal,
@@ -137,11 +139,17 @@ pub struct Key {
     code: KeyCode,
     ctrl: bool,
     shift: bool,
+    alt: bool,
 }
 
 impl Key {
-    pub fn new(code: KeyCode, ctrl: bool, shift: bool) -> Self {
-        Key { code, ctrl, shift }
+    pub fn new(code: KeyCode, ctrl: bool, shift: bool, alt: bool) -> Self {
+        Key {
+            code,
+            ctrl,
+            shift,
+            alt,
+        }
     }
 }
 
@@ -152,6 +160,9 @@ impl std::fmt::Display for Key {
         }
         if self.shift {
             f.write_str("S-")?;
+        }
+        if self.alt {
+            f.write_str("A-")?;
         }
         f.write_str(keycode::keycode_to_str(self.code))
     }
@@ -298,6 +309,7 @@ mod keycode {
                         code: char_to_keycode(char),
                         ctrl: false,
                         shift: false,
+                        alt: false,
                     })
                 }
                 _ => {
@@ -307,6 +319,7 @@ mod keycode {
                             code: char_to_keycode(char),
                             ctrl: true,
                             shift: false,
+                            alt: false,
                         })
                     } else if expr.len() == 3 && expr.starts_with("s-") {
                         let char = expr.chars().nth(2).expect("");
@@ -314,6 +327,15 @@ mod keycode {
                             code: char_to_keycode(char),
                             ctrl: false,
                             shift: true,
+                            alt: false,
+                        })
+                    } else if expr.len() == 3 && expr.starts_with("a-") {
+                        let char = expr.chars().nth(2).expect("");
+                        Ok(Key {
+                            code: char_to_keycode(char),
+                            ctrl: false,
+                            shift: false,
+                            alt: true,
                         })
                     } else {
                         let code = str_to_keycode(expr.as_str());
@@ -321,6 +343,7 @@ mod keycode {
                             code,
                             ctrl: false,
                             shift: false,
+                            alt: false,
                         })
                     }
                 }

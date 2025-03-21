@@ -4,3 +4,6 @@
 [submodule "nanoserde"]
 	path = nanoserde
 	url = https://github.com/bolphen/nanoserde
+[submodule "ase"]
+	path = ase
+	url = https://github.com/bolphen/ase-rs

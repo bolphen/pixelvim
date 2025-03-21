@@ -44,7 +44,7 @@ impl core::str::FromStr for Float {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Size(pub u32, pub u32);
 
 fn parse_size_with(expr: &str, sep: char) -> Option<Size> {
@@ -102,17 +102,7 @@ fn parse_vec(expr: &str, sep: char) -> Option<Color> {
 }
 
 fn parse_named(expr: &str) -> Option<Color> {
-    match expr.to_lowercase().as_str() {
-        "white" => Some(Color::WHITE),
-        "lightgray" => Some(Color::LIGHTGRAY),
-        "gray" => Some(Color::GRAY),
-        "darkgray" => Some(Color::DARKGRAY),
-        "black" => Some(Color::BLACK),
-        "red" => Some(Color::RED),
-        "orange" => Some(Color::ORANGE),
-        "cyan" => Some(Color::CYAN),
-        _ => None,
-    }
+    expr.try_into().ok()
 }
 
 impl core::str::FromStr for Color {

@@ -222,6 +222,7 @@ impl Input {
         match cmd.split_once(' ') {
             None => data.complete_cmd(self, cmd.into()),
             Some((cmd, to_complete)) => {
+                let cmd = cmd.trim_end_matches('!');
                 let to_complete = to_complete.trim_start();
                 match data.match_cmd(cmd) {
                     Match::Single("set") => {
@@ -302,7 +303,7 @@ impl Input {
         }
     }
     pub fn prev_completion(&mut self, data: &CompletionData) {
-        if let Some((_, ref mut id, completions)) = &mut self.completions {
+        if let Some((_, id, completions)) = &mut self.completions {
             *id = (*id + completions.len() - 1) % completions.len();
         } else {
             self.get_completions(data, None);
@@ -310,7 +311,7 @@ impl Input {
         self.complete();
     }
     pub fn next_completion(&mut self, data: &CompletionData) {
-        if let Some((_, ref mut id, completions)) = &mut self.completions {
+        if let Some((_, id, completions)) = &mut self.completions {
             *id = (*id + 1) % completions.len();
         } else {
             self.get_completions(data, None);

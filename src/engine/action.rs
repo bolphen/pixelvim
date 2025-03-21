@@ -15,6 +15,7 @@ impl Engine {
                 if self.mode.is_visual() {
                     self.mode = Mode::normal(None);
                 }
+                self.tracker.reset_used();
                 if let Some(b) = buffer {
                     b.clear_temporary()
                 }
@@ -38,6 +39,7 @@ impl Engine {
                 if self.mode.is_normal() {
                     self.mode = Mode::visual(None);
                 }
+                self.tracker.reset_used();
                 if let Some(b) = buffer {
                     b.clear_temporary()
                 }
@@ -51,6 +53,7 @@ impl Engine {
             }
             (Action::PixelPerfect, buffer, false) => {
                 self.tracker.pixel_perfect = !self.tracker.pixel_perfect;
+                self.tracker.reset_used();
                 if let Some(b) = buffer {
                     b.clear_temporary()
                 }
@@ -65,7 +68,8 @@ impl Engine {
                 | Action::EllipseFilled
                 | Action::EllipseOutline
                 | Action::Line
-                | Action::Move,
+                | Action::Move
+                | Action::Rotate,
                 buffer,
                 false,
             ) => {
@@ -80,9 +84,11 @@ impl Engine {
                     Action::EllipseOutline => Tool::Ellipse(true),
                     Action::Line => Tool::Line,
                     Action::Move => Tool::Move,
+                    Action::Rotate => Tool::Rotate,
                     _ => unreachable!(),
                 };
                 if self.tool.set(tool) {
+                    self.tracker.reset_used();
                     if let Some(b) = buffer {
                         b.clear_temporary()
                     }
@@ -108,6 +114,7 @@ impl Engine {
                     _ => unreachable!(),
                 };
                 self.tool.set_or_toggle(tool);
+                self.tracker.reset_used();
                 if let Some(b) = buffer {
                     b.clear_temporary()
                 }
@@ -186,6 +193,7 @@ impl Engine {
                                 Some(*img_idx),
                                 Some(*offset),
                                 self.draw_mode.0,
+                                None, // software render for now
                             );
                             self.mode.set_message(Message::normal("Used move"));
                         } else {
@@ -205,6 +213,7 @@ impl Engine {
                                             Some(img_idx),
                                             Some(dir),
                                             self.draw_mode.0,
+                                            None, // software render for now
                                         )
                                         .2;
                                         self.mode = Mode::paste(
@@ -238,12 +247,15 @@ impl Engine {
                 }
             }
             (Action::Insert, Some(buffer), _) => {
-                let cursor = buffer.move_cursor((0, 0));
-                if !self.tracker.is_any_in_use() {
-                    self.tracker.start(cursor, tool::InputType::Keyboard);
+                let cursor = buffer.cursor();
+                if self.picker {
+                    buffer.picker(cursor).map(|c| self.color = c);
+                } else if !self.tracker.is_any_in_use() {
+                    let frame = (!buffer.edit_all).then_some(buffer.current_frame_id());
+                    self.tracker.start(cursor, tool::InputType::Keyboard, frame);
                     if self.mode.is_visual() {
                         self.tool.visual_preview(
-                            &self.tracker,
+                            &mut self.tracker,
                             buffer,
                             self.draw_mode.1,
                             self.mode.take_modifier(),
@@ -251,12 +263,13 @@ impl Engine {
                         );
                     } else {
                         self.tool.normal_preview(
-                            &self.tracker,
+                            &mut self.tracker,
                             buffer,
                             self.draw_mode.0,
                             self.color,
                             self.mode.take_modifier(),
                             &self.tool_setting,
+                            None, // software render for now
                         );
                     }
                 } else if self.tracker.is_keyboard_in_use() {
@@ -274,7 +287,8 @@ impl Engine {
                         self.commit();
                     }
                     match (action, self.buffers.get_mut(self.current), repeat) {
-                        (Action::Command, _, false) => {
+                        (Action::Command, buffer, false) => {
+                            buffer.map(|b| b.clear_temporary());
                             self.mode.clear_message();
                             self.overlay = Overlay::Command(Input::new(""));
                         }

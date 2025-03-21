@@ -1,6 +1,6 @@
-use crate::algo::{Brush, Selection};
-use crate::color::{Color, ColorMode};
+use crate::color::Color;
 use crate::image::{Image, Symmetry};
+use crate::selection::Selection;
 
 pub fn flip_x(image: &Image, selection: &Selection, symmetry: Symmetry) -> (Image, Selection) {
     let width = image.width();
@@ -32,7 +32,7 @@ pub fn flip_y(image: &Image, selection: &Selection, symmetry: Symmetry) -> (Imag
     (new, crate::algo::flip_y(image, selection, symmetry))
 }
 
-pub fn resize(image: &Image, width: usize, height: usize) -> Image {
+pub fn resize_image(image: &Image, width: usize, height: usize) -> Image {
     let x_factor = image.width() as f32 / width as f32;
     let y_factor = image.height() as f32 / height as f32;
     let mut new = Image::new_with(width, height, (0, 0, 0, 0).into());
@@ -43,6 +43,146 @@ pub fn resize(image: &Image, width: usize, height: usize) -> Image {
             *new.get_unchecked_mut(x, y) = *image.get_unchecked(xx, yy);
         }
     }
+    new
+}
+
+pub fn scale2x(image: &Image) -> Image {
+    let (width, height) = (image.width(), image.height());
+    let mut new = Image::new_with(width * 2, height * 2, (0, 0, 0, 0).into());
+    if height == 0 {
+        return new;
+    }
+    for x in 0..width as i32 {
+        for y in 0..height as i32 {
+            let c = *image.get_unchecked(x, y);
+            let l = image.get(x - 1, y);
+            let r = image.get(x + 1, y);
+            let u = image.get(x, y - 1);
+            let d = image.get(x, y + 1);
+            *new.get_unchecked_mut(2 * x, 2 * y) = l
+                .and_then(|l| (u == Some(l) && r != u && d != Some(l)).then_some(*l))
+                .unwrap_or(c);
+            *new.get_unchecked_mut(2 * x + 1, 2 * y) = r
+                .and_then(|r| (u == Some(r) && l != u && d != Some(r)).then_some(*r))
+                .unwrap_or(c);
+            *new.get_unchecked_mut(2 * x, 2 * y + 1) = l
+                .and_then(|l| (d == Some(l) && Some(l) != u && r != d).then_some(*l))
+                .unwrap_or(c);
+            *new.get_unchecked_mut(2 * x + 1, 2 * y + 1) = r
+                .and_then(|r| (d == Some(r) && Some(r) != u && l != d).then_some(*r))
+                .unwrap_or(c);
+        }
+    }
+    new
+}
+
+pub fn scale3x(image: &Image) -> Image {
+    let (width, height) = (image.width(), image.height());
+    let mut new = Image::new_with(width * 3, height * 3, (0, 0, 0, 0).into());
+    if height == 0 {
+        return new;
+    }
+    for x in 0..width as i32 {
+        for y in 0..height as i32 {
+            let c = *image.get_unchecked(x, y);
+            let l = image.get(x - 1, y);
+            let r = image.get(x + 1, y);
+            let u = image.get(x, y - 1);
+            let ul = image.get(x - 1, y - 1);
+            let ur = image.get(x + 1, y - 1);
+            let d = image.get(x, y + 1);
+            let dl = image.get(x - 1, y + 1);
+            let dr = image.get(x + 1, y + 1);
+            *new.get_unchecked_mut(3 * x, 3 * y) = l
+                .and_then(|l| (u == Some(l) && r != u && d != Some(l)).then_some(*l))
+                .unwrap_or(c);
+            *new.get_unchecked_mut(3 * x + 1, 3 * y) = l
+                .and_then(|l| {
+                    (u == Some(l) && r != u && d != Some(l) && ur != Some(&c)).then_some(*l)
+                })
+                .unwrap_or(
+                    r.and_then(|r| {
+                        (u == Some(r) && l != u && d != Some(r) && ul != Some(&c)).then_some(*r)
+                    })
+                    .unwrap_or(c),
+                );
+            *new.get_unchecked_mut(3 * x + 2, 3 * y) = r
+                .and_then(|r| (u == Some(r) && l != u && d != Some(r)).then_some(*r))
+                .unwrap_or(c);
+            *new.get_unchecked_mut(3 * x, 3 * y + 1) = l
+                .and_then(|l| {
+                    ((d == Some(l) && r != d && u != Some(l) && ul != Some(&c))
+                        || (u == Some(l) && r != u && d != Some(l) && dl != Some(&c)))
+                    .then_some(*l)
+                })
+                .unwrap_or(c);
+            *new.get_unchecked_mut(3 * x + 1, 3 * y + 1) = c;
+            *new.get_unchecked_mut(3 * x + 2, 3 * y + 1) = r
+                .and_then(|r| {
+                    ((d == Some(r) && l != d && u != Some(r) && ur != Some(&c))
+                        || (u == Some(r) && l != u && d != Some(r) && dr != Some(&c)))
+                    .then_some(*r)
+                })
+                .unwrap_or(c);
+            *new.get_unchecked_mut(3 * x, 3 * y + 2) = l
+                .and_then(|l| (d == Some(l) && Some(l) != u && r != d).then_some(*l))
+                .unwrap_or(c);
+            *new.get_unchecked_mut(3 * x + 1, 3 * y + 2) = l
+                .and_then(|l| {
+                    (d == Some(l) && r != d && u != Some(l) && dr != Some(&c)).then_some(*l)
+                })
+                .unwrap_or(
+                    r.and_then(|r| {
+                        (d == Some(r) && l != d && u != Some(r) && dl != Some(&c)).then_some(*r)
+                    })
+                    .unwrap_or(c),
+                );
+            *new.get_unchecked_mut(3 * x + 2, 3 * y + 2) = r
+                .and_then(|r| (d == Some(r) && Some(r) != u && l != d).then_some(*r))
+                .unwrap_or(c);
+        }
+    }
+    new
+}
+
+pub fn rotate_angle(image: &Image, angle: f32, center: Option<(f32, f32)>) -> Image {
+    let (width, height) = (image.width(), image.height());
+    let center = center.unwrap_or((width as f32 / 2., height as f32 / 2.));
+    let scaled = scale3x(image);
+    let mut new = image.blank();
+    for x in 0..width as i32 {
+        for y in 0..height as i32 {
+            let c = angle.cos();
+            let s = angle.sin();
+            let xx = (3.
+                * ((x as f32 + 0.5 - center.0) * c + (y as f32 + 0.5 - center.1) * s + center.0
+                    - 1. / 3.))
+                .round() as _;
+            let yy = (3.
+                * ((x as f32 + 0.5 - center.0) * -s + (y as f32 + 0.5 - center.1) * c + center.1
+                    - 1. / 3.))
+                .round() as _;
+            if let Some(c) = scaled.get(xx, yy) {
+                *new.get_unchecked_mut(x, y) = *c;
+            }
+        }
+    }
+    new
+}
+pub fn rotate_bounds(image: &Image, bounds: ((i32, i32), (i32, i32))) -> Image {
+    let (width, height) = (image.width() as f32, image.height() as f32);
+    let center = (width / 2., height / 2.);
+    rotate_angle(
+        image,
+        f32::atan2(bounds.1.1 as f32 - center.1, bounds.1.0 as f32 - center.0)
+            - f32::atan2(bounds.0.1 as f32 - center.1, bounds.0.0 as f32 - center.0),
+        Some(center),
+    )
+}
+
+pub fn resize_canvas(image: &Image, width: usize, height: usize) -> Image {
+    let mut new = Image::new_with(width, height, (0, 0, 0, 0).into());
+    image.blit(&mut new, 0, 0);
     new
 }
 
@@ -75,7 +215,7 @@ pub fn reduce(image: &Image, selection: &Selection, palette: &[Color]) -> Option
         let mut changed = false;
         for j in 0..image.height() as i32 {
             for i in 0..image.width() as i32 {
-                if selection.is_empty() || selection.contains(&(i, j)) {
+                if selection.is_empty() || selection.contains((i, j)) {
                     let color = new.get_unchecked_mut(i, j);
                     if color.3 > 0 {
                         let mut pal: Vec<_> = palette.iter().map(|c| (c.diff(color), c)).collect();
@@ -91,127 +231,6 @@ pub fn reduce(image: &Image, selection: &Selection, palette: &[Color]) -> Option
         }
         changed.then_some(new)
     })?
-}
-
-pub fn brush(
-    image: &Image,
-    selection: &Selection,
-    trace: Vec<(i32, i32)>,
-    color_mode: ColorMode,
-    symmetry: Symmetry,
-    brush: &Brush,
-    outline: bool,
-) -> Option<Image> {
-    let diff: Vec<_> = crate::algo::brush(image, trace, symmetry, brush, outline)
-        .into_iter()
-        .filter(|(x, y)| {
-            image.is_in_bound(*x, *y) && (selection.is_empty() || selection.contains(&(*x, *y)))
-        })
-        .collect();
-    (!diff.is_empty()).then(|| {
-        let mut new = image.clone();
-        for (x, y) in diff {
-            color_mode.apply(new.get_unchecked_mut(x, y));
-        }
-        new
-    })
-}
-
-pub fn rect(
-    image: &Image,
-    selection: &Selection,
-    bounds: ((i32, i32), (i32, i32)),
-    color_mode: ColorMode,
-    symmetry: Symmetry,
-    outline: bool,
-) -> Option<Image> {
-    let diff: Vec<_> = crate::algo::rect(image, bounds, symmetry, outline)
-        .into_iter()
-        .filter(|(x, y)| {
-            image.is_in_bound(*x, *y) && (selection.is_empty() || selection.contains(&(*x, *y)))
-        })
-        .collect();
-    (!diff.is_empty()).then(|| {
-        let mut new = image.clone();
-        for (x, y) in diff {
-            color_mode.apply(new.get_unchecked_mut(x, y));
-        }
-        new
-    })
-}
-
-pub fn ellipse(
-    image: &Image,
-    selection: &Selection,
-    bounds: ((i32, i32), (i32, i32)),
-    color_mode: ColorMode,
-    symmetry: Symmetry,
-    outline: bool,
-) -> Option<Image> {
-    let diff: Vec<_> = crate::algo::ellipse(image, bounds, symmetry, outline)
-        .into_iter()
-        .filter(|(x, y)| {
-            image.is_in_bound(*x, *y) && (selection.is_empty() || selection.contains(&(*x, *y)))
-        })
-        .collect();
-    (!diff.is_empty()).then(|| {
-        let mut new = image.clone();
-        for (x, y) in diff {
-            color_mode.apply(new.get_unchecked_mut(x, y));
-        }
-        new
-    })
-}
-
-pub fn line(
-    image: &Image,
-    selection: &Selection,
-    bounds: ((i32, i32), (i32, i32)),
-    color_mode: ColorMode,
-    symmetry: Symmetry,
-    brush: &Brush,
-) -> Option<Image> {
-    let diff: Vec<_> = crate::algo::line(image, bounds, symmetry, brush)
-        .into_iter()
-        .filter(|(x, y)| {
-            image.is_in_bound(*x, *y) && (selection.is_empty() || selection.contains(&(*x, *y)))
-        })
-        .collect();
-    (!diff.is_empty()).then(|| {
-        let mut new = image.clone();
-        for (x, y) in diff {
-            color_mode.apply(new.get_unchecked_mut(x, y));
-        }
-        new
-    })
-}
-
-pub fn flood(
-    image: &Image,
-    selection: &Selection,
-    cursor: (i32, i32),
-    tolerance: u8,
-    color_mode: ColorMode,
-    symmetry: Symmetry,
-    discon: bool,
-) -> Option<Image> {
-    let diff: Vec<_> = crate::algo::flood(
-        image,
-        (!selection.is_empty()).then_some(selection),
-        cursor,
-        tolerance,
-        symmetry,
-        discon,
-    )
-    .into_iter()
-    .collect();
-    (!diff.is_empty()).then(|| {
-        let mut new = image.clone();
-        for (x, y) in diff {
-            color_mode.apply(new.get_unchecked_mut(x, y));
-        }
-        new
-    })
 }
 
 pub fn r#move(image: &Image, dir: (i32, i32)) -> Image {
@@ -231,7 +250,7 @@ pub fn r#move(image: &Image, dir: (i32, i32)) -> Image {
 pub fn cut(image: &Image, selection: &Selection) -> Image {
     let mut new = image.clone();
     for (x, y) in selection.iter() {
-        new.get_mut(*x, *y).map(|c| *c = Color(0, 0, 0, 0));
+        new.get_mut(x, y).map(|c| *c = Color(0, 0, 0, 0));
     }
     new
 }

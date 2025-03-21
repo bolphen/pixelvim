@@ -1,19 +1,37 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
-pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
+pub struct Rect<T> {
+    pub x: T,
+    pub y: T,
+    pub w: T,
+    pub h: T,
 }
 
-impl Rect {
-    pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
+impl<T> From<(T, T, T, T)> for Rect<T> {
+    fn from(value: (T, T, T, T)) -> Self {
+        let (x, y, w, h) = value;
+        Rect { x, y, w, h }
+    }
+}
+
+impl<T: Copy> Rect<T> {
+    pub fn new(x: T, y: T, w: T, h: T) -> Self {
         Self { x, y, w, h }
     }
-    pub fn get(&self) -> (f32, f32, f32, f32) {
+    pub fn get(&self) -> (T, T, T, T) {
         (self.x, self.y, self.w, self.h)
+    }
+}
+
+impl<T> Rect<T>
+where
+    T: std::ops::AddAssign,
+{
+    pub fn offset_by(mut self, dir: (T, T)) -> Self {
+        self.x += dir.0;
+        self.y += dir.1;
+        self
     }
 }
 

@@ -11,13 +11,14 @@ use miniquad::*;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::algo::{Brush, Selection};
 use crate::color::Color;
 use crate::command::{Command, Commands, Modifier, Setting, Settings, Toggleable};
+use crate::compression::Compressible;
 use crate::error::{EditError, Error};
 use crate::image::Image;
 use crate::input::Input;
 use crate::mapping::{Action, Key, KeyMap};
+use crate::selection::Selection;
 use buffer::{ImgIndex, PasteFrom, RegIndex};
 use register::Register;
 use tool::{Tool, ToolSetting, Tracker};
@@ -204,13 +205,13 @@ pub struct Engine {
     buffers: Vec<Buffer>,
     buffer_count: usize,
     current: usize,
-    quit_requested: bool,
     history: Vec<String>,
     tracker: Tracker,
+    dummy: Tracker,
     palette: Vec<Color>,
     picker: bool,
     pub screen: (f32, f32),
-    mouse: (f32, f32),
+    pub mouse: (f32, f32),
     pub screen_tile: (i32, i32),
     pub mouse_tile: (i32, i32),
     pub show_ui: bool,
@@ -234,6 +235,8 @@ pub struct Engine {
     display: DisplayMode,
     srgb: bool,
     debug: bool,
+    software_render: bool,
+    pub system_cursor: bool,
 
     draw_mode: (NormalMode, VisualMode),
     time: crate::utils::TimeManager,
@@ -369,9 +372,9 @@ impl Engine {
             buffer_count: 0,
             current: 0,
             tracker: Tracker::default(),
+            dummy: Tracker::default(),
             palette: Vec::new(),
             picker: false,
-            quit_requested: false,
             screen: (0., 0.),
             mouse: (0., 0.),
             screen_tile: (0, 0),
@@ -386,7 +389,7 @@ impl Engine {
             settings: Settings::default(),
 
             tool: Tool::Brush(true),
-            color: Color::LIGHTGRAY,
+            color: Color::WHITE,
             tool_setting: ToolSetting::new(),
 
             background: Color::DARKGRAY.alpha(192),
@@ -397,6 +400,8 @@ impl Engine {
             display: DisplayMode::Expand(true),
             srgb,
             debug: false,
+            software_render: false,
+            system_cursor: true,
 
             draw_mode: (NormalMode::Blend(srgb), VisualMode::Add),
             time: crate::utils::TimeManager::new(),
@@ -420,11 +425,12 @@ impl Engine {
     }
     #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
     pub fn run_script(&mut self, script: String, modifier: Option<Modifier>) -> Result<(), Error> {
+        let color = self.color;
         let buffer = self
             .active_buffer_mut()
             .map_err(|_| Error::NoActiveBuffer)?;
         let lua = crate::lua::LuaInstance::new()?;
-        lua.init(buffer)?;
+        lua.init(buffer, color)?;
         lua.set_modifier(get_modifier(modifier))?;
         let (handle, interrupt) = lua.exec(script);
         self.overlay = Overlay::Running(handle, interrupt);
@@ -440,8 +446,12 @@ impl Engine {
             .map_err(|_| Error::NoActiveBuffer)?;
         let output = lua.retrieve_output()?;
         let name = output.name.as_ref().map_or("script", |s| s);
-        buffer.batch_edit(Some(name), output.changed_frames, None, false)?;
-        self.mode.message(&format!("Used {name}"));
+        if !output.changed_frames.is_empty() {
+            buffer.batch_edit(Some(name), output.changed_frames, None, false)?;
+            self.mode.message(&format!("Used {name}"));
+        } else {
+            self.mode.message(&format!("Executed {name}"));
+        }
         Ok(())
     }
     pub fn load_config_from_path(&mut self, path: &PathBuf) {
@@ -493,7 +503,8 @@ impl Engine {
             }
         }
     }
-    fn new_buffer(&mut self, buffer: Buffer) -> &mut Buffer {
+    fn new_buffer(&mut self, mut buffer: Buffer) -> &mut Buffer {
+        buffer.set_cursor(self.mouse);
         if self.buffers.is_empty() {
             self.buffers.push(buffer);
             &mut self.buffers[0]
@@ -504,8 +515,32 @@ impl Engine {
         }
     }
     pub fn new_buffer_with_size(&mut self, width: usize, height: usize) -> &mut Buffer {
-        self.new_buffer_from_image(Image::new_with(width, height, (0, 0, 0, 0).into()))
+        self.new_buffer_from_image(Image::new(width, height))
     }
+    // pub fn new_buffer_from_data(&mut self, bytes: &[u8]) {
+    //     if let Ok(image) = crate::format::load_png(bytes) {
+    //         self.new_buffer_from_image(image).session.mark_unsaved();
+    //         self.mode
+    //             .set_to_normal(Some(Message::normal("Loaded image (png)")));
+    //     } else if let Ok((frames, delay)) = crate::format::load_gif(bytes) {
+    //         self.new_buffer_from_layers(vec![frames], None, delay)
+    //             .session
+    //             .mark_unsaved();
+    //         self.mode
+    //             .set_to_normal(Some(Message::normal("Loaded image (gif)")));
+    //     } else if let Ok((layers, visibility, delay, palette)) = crate::format::load_ase(bytes) {
+    //         self.new_buffer_from_layers(layers, Some(visibility), delay)
+    //             .session
+    //             .mark_unsaved();
+    //         self.palette.clear();
+    //         self.palette.extend(palette);
+    //         self.mode
+    //             .set_to_normal(Some(Message::normal("Loaded image (ase)")));
+    //     } else {
+    //         self.mode
+    //             .set_to_normal(Some(Message::error("Unsupported image format")));
+    //     }
+    // }
     fn new_buffer_from_image(&mut self, image: Image) -> &mut Buffer {
         self.new_buffer_from_layers(vec![vec![image]], None, vec![100])
     }
@@ -543,7 +578,7 @@ impl Engine {
             (Err(e), None) => Err(e.to_string())?,
             _ => (),
         }
-        let ext = path.extension().ok_or("Unsupported file format")?;
+        let ext = path.extension().ok_or("Unsupported image format")?;
         if let Some(swap) = crate::utils::get_swap_path(path) {
             if swap.exists() {
                 if let Ok(bytes) = std::fs::read(&swap) {
@@ -555,7 +590,7 @@ impl Engine {
                         self.buffer_count += 1;
                         buffer.fit_to_view(self.screen);
                         self.new_buffer(buffer);
-                        self.mode.set_to_normal(Some(Message::normal(
+                        self.mode.set_to_normal(Some(Message::warning(
                             "Recovered last session from swap file",
                         )));
                         // do not delete the swap yet
@@ -592,9 +627,11 @@ impl Engine {
                     Some(bytes) => bytes,
                     None => std::fs::read(path).map_err(|e| e.to_string())?,
                 };
-                let (layers, visibility, delay) = crate::format::load_ase(&bytes[..])?;
+                let (layers, visibility, delay, palette) = crate::format::load_ase(&bytes[..])?;
                 let buffer = self.new_buffer_from_layers(layers, Some(visibility), delay);
                 buffer.metadata.path = Some(path.into());
+                self.palette.clear();
+                self.palette.extend(palette);
             }
             e if e == "swp" => {
                 let bytes = match bytes {
@@ -602,6 +639,7 @@ impl Engine {
                     None => std::fs::read(path).map_err(|e| e.to_string())?,
                 };
                 let mut buffer = Buffer::load_from_swap(bytes, BufferId::new(self.buffer_count))?;
+                buffer.metadata.path = Some(path.into());
                 self.buffer_count += 1;
                 buffer.session.mark_unsaved();
                 buffer.fit_to_view(self.screen);
@@ -620,7 +658,7 @@ impl Engine {
                 }
                 return Ok(());
             }
-            _ => Err("Unsupported file format")?,
+            _ => Err("Unsupported image format")?,
         }
         self.mode
             .set_to_normal(Some(Message::normal("Opened image")));
@@ -658,6 +696,93 @@ impl Engine {
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
+    fn _write(path: &PathBuf, data: &[u8]) -> Result<(), String> {
+        std::fs::write(path, data).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(target_arch = "wasm32")]
+    fn _write(path: &PathBuf, data: &[u8]) -> Result<(), String> {
+        unsafe {
+            let path = path.as_os_str().to_str().unwrap();
+            miniquad::native::wasm::fs::fs_save_file(
+                data.as_ptr() as _,
+                data.len() as _,
+                path.as_ptr() as _,
+                path.len() as _,
+            );
+        }
+        Ok(())
+    }
+    fn _save_to_path(
+        buffer: &mut Buffer,
+        palette: Vec<Color>,
+        path: PathBuf,
+        save_to_new: bool,
+    ) -> Result<Message, String> {
+        if path.extension().is_some_and(|e| e == "png") {
+            let mut data = Vec::new();
+            crate::format::write_png(buffer.composed(), &mut data)?;
+            Self::_write(&path, &data)?;
+            buffer.metadata.path = Some(path);
+            buffer.clean_swap();
+            buffer.history_mark_saved();
+            Ok(if buffer.num_layers() > 1 || buffer.num_frames() > 1 {
+                Message::warning("Saved to png. Warning: workspace contains multiple layers/frames")
+            } else if save_to_new {
+                Message::normal("Saved to path")
+            } else {
+                Message::normal("Saved")
+            })
+        } else if path.extension().is_some_and(|e| e == "gif") {
+            let mut data = Vec::new();
+            let (l, d) = buffer.gif_data();
+            crate::format::write_gif(l, d, &mut data)?;
+            Self::_write(&path, &data)?;
+            buffer.metadata.path = Some(path);
+            buffer.clean_swap();
+            buffer.history_mark_saved();
+            Ok(if buffer.num_layers() > 1 {
+                Message::warning("Saved to gif. Warning: workspace contains multiple layers")
+            } else if save_to_new {
+                Message::normal("Saved to path")
+            } else {
+                Message::normal("Saved")
+            })
+        } else if path
+            .extension()
+            .is_some_and(|e| e == "ase" || e == "aseprite")
+        {
+            let mut data = Vec::new();
+            let (l, v, d) = buffer.ase_data();
+            crate::format::write_ase(l, v, d, palette, &mut data)?;
+            Self::_write(&path, &data)?;
+            buffer.metadata.path = Some(path);
+            buffer.clean_swap();
+            buffer.history_mark_saved();
+            Ok(if save_to_new {
+                Message::normal("Saved to path")
+            } else {
+                Message::normal("Saved")
+            })
+        } else if path.extension().is_some_and(|e| e == "swp") {
+            let session = buffer.session.compress();
+            let data = session.data();
+            Self::_write(&path, data)?;
+            buffer.metadata.path = Some(path);
+            Ok(Message::warning("Saved to swap file"))
+        } else {
+            Err("Unsupported image format")?
+        }
+    }
+    pub fn save_buffer_directly(
+        buffer: &mut Buffer,
+        palette: Vec<Color>,
+        path: PathBuf,
+    ) -> Result<(), String> {
+        Self::_save_to_path(buffer, palette, path, true)?;
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save_buffer(&mut self, path: Option<PathBuf>, forced: bool) -> Result<(), String> {
         let mut path_is_current = false;
         if let Some(path) = &path {
@@ -683,6 +808,7 @@ impl Engine {
                 }
             }
         }
+        let palette = self.palette.clone();
         let buffer = self.active_buffer_mut()?;
         let (path, save_to_new) = path
             .as_ref()
@@ -692,106 +818,24 @@ impl Engine {
         if save_to_new && path.exists() && !forced {
             Err("File exists. Use :w! to overwrite")?
         }
-        if path.extension().is_some_and(|e| e == "png") {
-            let mut data = Vec::new();
-            crate::format::write_png(buffer.composed(), &mut data)?;
-            std::fs::write(path, data).map_err(|e| e.to_string())?;
-            buffer.metadata.path = Some(path.into());
-            buffer.clean_swap();
-            buffer.history_mark_saved();
-            if buffer.num_layers() > 1 || buffer.num_frames() > 1 {
-                self.mode
-                    .warning("Saved to png. Warning: workspace contains multiple layers/frames");
-            } else if save_to_new {
-                self.mode.message("Saved to path");
-            } else {
-                self.mode.message("Saved");
-            }
-        } else if path.extension().is_some_and(|e| e == "gif") {
-            let mut data = Vec::new();
-            let (l, d) = buffer.gif_data();
-            crate::format::write_gif(l, d, &mut data)?;
-            std::fs::write(path, data).map_err(|e| e.to_string())?;
-            buffer.metadata.path = Some(path.into());
-            buffer.clean_swap();
-            buffer.history_mark_saved();
-            if buffer.num_layers() > 1 {
-                self.mode
-                    .warning("Saved to gif. Warning: workspace contains multiple layers");
-            } else if save_to_new {
-                self.mode.message("Saved to path");
-            } else {
-                self.mode.message("Saved");
-            }
-        } else {
-            Err("Unsupported file format")?
-        }
+        let message = Self::_save_to_path(buffer, palette, path.clone(), save_to_new)?;
+        self.mode.set_message(message);
         Ok(())
     }
     #[cfg(target_arch = "wasm32")]
-    pub fn save_buffer(&mut self, path: Option<PathBuf>, forced: bool) -> Result<(), String> {
+    pub fn save_buffer(&mut self, path: Option<PathBuf>, _forced: bool) -> Result<(), String> {
+        let palette = self.palette.clone();
         let buffer = self.active_buffer_mut()?;
-        let path = path.unwrap_or(if buffer.num_frames() > 1 {
-            "output.gif".into()
-        } else {
-            "output.png".into()
-        });
-        if path.extension().is_some_and(|e| e == "png") {
-            let mut data = Vec::new();
-            crate::format::write_png(buffer.composed(), &mut data)?;
-            unsafe {
-                let file_type = "image/png";
-                let path = path.as_os_str().to_str().unwrap();
-                miniquad::native::wasm::fs::fs_save_file(
-                    data.as_ptr() as _,
-                    data.len() as _,
-                    file_type.as_ptr() as _,
-                    file_type.len() as _,
-                    path.as_ptr() as _,
-                    path.len() as _,
-                );
-            }
-            buffer.metadata.path = Some(path.into());
-            buffer.clean_swap();
-            buffer.history_mark_saved();
-            if buffer.num_layers() > 1 || buffer.num_frames() > 1 {
-                self.mode
-                    .warning("Saved to png. Warning: workspace contains multiple layers/frames");
+        let path = path.unwrap_or(buffer.metadata.path.clone().unwrap_or(
+            if buffer.num_frames() > 1 {
+                "output.gif".into()
             } else {
-                self.mode.message("Saved");
-            }
-        } else if path.extension().is_some_and(|e| e == "gif") {
-            let mut data = Vec::new();
-            let (l, d) = buffer.gif_data();
-            crate::format::write_gif(l, d, &mut data)?;
-            unsafe {
-                let file_type = "image/gif";
-                let path = path.as_os_str().to_str().unwrap();
-                miniquad::native::wasm::fs::fs_save_file(
-                    data.as_ptr() as _,
-                    data.len() as _,
-                    file_type.as_ptr() as _,
-                    file_type.len() as _,
-                    path.as_ptr() as _,
-                    path.len() as _,
-                );
-            }
-            buffer.metadata.path = Some(path.into());
-            buffer.clean_swap();
-            buffer.history_mark_saved();
-            if buffer.num_layers() > 1 {
-                self.mode
-                    .warning("Saved to gif. Warning: workspace contains multiple layers");
-            } else {
-                self.mode.message("Saved");
-            }
-        } else {
-            Err("Unsupported file format")?
-        }
+                "output.png".into()
+            },
+        ));
+        let message = Self::_save_to_path(buffer, palette, path.clone(), true)?;
+        self.mode.set_message(message);
         Ok(())
-    }
-    pub fn quit_requested(&self) -> bool {
-        self.quit_requested
     }
     pub fn tool_string(&self) -> String {
         let mut s = self.tool.string(&self.tool_setting);
@@ -826,7 +870,11 @@ impl Engine {
     }
     pub fn key_up_event(&mut self, keycode: KeyCode, keymods: KeyMods) {
         if let Overlay::None = &mut self.overlay {
-            let key = Key::new(keycode, keymods.ctrl, keymods.shift);
+            use KeyCode::*;
+            let ctrl = keymods.ctrl && !matches!(keycode, LeftControl | RightControl);
+            let shift = keymods.shift && !matches!(keycode, LeftShift | RightShift);
+            let alt = keymods.alt && !matches!(keycode, LeftAlt | RightAlt);
+            let key = Key::new(keycode, ctrl, shift, alt);
             let actions = if self.mode.is_visual() {
                 self.key_map.get_visual(key).1
             } else {
@@ -882,7 +930,7 @@ impl Engine {
                     settings: &self.settings,
                 };
                 match (keycode, keymods.ctrl, keymods.shift) {
-                    (KeyCode::Enter, false, false) => {
+                    (KeyCode::Enter, false, false) | (KeyCode::J | KeyCode::M, true, false) => {
                         if self.history.last().is_none_or(|h| h != input.text()) {
                             self.history.push(input.text().into());
                         }
@@ -907,7 +955,7 @@ impl Engine {
                             input.backspace();
                         }
                     }
-                    (KeyCode::Delete, false, false) => {
+                    (KeyCode::D, true, false) | (KeyCode::Delete, false, false) => {
                         input.delete();
                     }
                     (KeyCode::A, true, false) | (KeyCode::Home, false, false) => {
@@ -959,7 +1007,7 @@ impl Engine {
                 }
             }
             Overlay::None => {
-                let key = Key::new(keycode, keymods.ctrl, keymods.shift);
+                let key = Key::new(keycode, keymods.ctrl, keymods.shift, keymods.alt);
                 let actions = if self.mode.is_visual() {
                     self.key_map.get_visual(key).0
                 } else {
@@ -1128,10 +1176,11 @@ impl Engine {
                             if self.picker {
                                 buffer.picker(new).map(|c| self.color = c);
                             } else if self.overlay.is_none() {
+                                let frame = (!buffer.edit_all).then_some(buffer.current_frame_id());
                                 if self.tracker.is_keyboard_in_use() {
                                     self.commit();
                                 }
-                                self.tracker.start(new, tool::InputType::Mouse);
+                                self.tracker.start(new, tool::InputType::Mouse, frame);
                             }
                         }
                     }
@@ -1144,13 +1193,19 @@ impl Engine {
         if let Some(buffer) = self.buffers.get_mut(self.current) {
             match &mut self.mode {
                 Mode::Visual { message, modifier } => {
-                    *message = self.tool.visual_use(
-                        &self.tracker,
-                        buffer,
-                        self.draw_mode.1,
-                        modifier.take(),
-                        &self.tool_setting,
-                    )
+                    modifier.take();
+                    let name = format!("{} selection", self.tool.string_short());
+                    if matches!(self.tool, Tool::Move) {
+                        if buffer.selection().is_empty() {
+                            *message = Some(Message::error("Empty selection"));
+                        } else if self.tracker.get_dir() != Some((0, 0))
+                            && buffer.commit_temporary_selection(&name).is_some()
+                        {
+                            *message = Some(self.tool.visual_message());
+                        }
+                    } else if buffer.commit_temporary_selection(&name).is_some() {
+                        *message = Some(self.tool.visual_message());
+                    }
                 }
                 Mode::Normal {
                     message,
@@ -1195,6 +1250,7 @@ impl Engine {
                                 Some(*img_idx),
                                 Some(*offset),
                                 self.draw_mode.0,
+                                None, // software render for now
                             );
                             *message = Some(Message::normal("Used move"));
                         }
@@ -1219,59 +1275,37 @@ impl Engine {
             }
         }
     }
-    pub fn update(&mut self) {
-        let elapsed = self.time.elapsed();
-        self.time.update();
-        let mut running = false;
-        #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
-        if let Overlay::Running(handle, _) = &mut self.overlay {
-            if handle.is_finished() {
-                let lua_handle = self.overlay.take_handle().expect("");
-                self.overlay = Overlay::None;
-                if let Err(e) = self.finish_script(lua_handle) {
-                    self.mode.error(&e.to_string());
-                }
-            } else {
-                running = true;
-            }
+    pub fn full_update(&mut self, graphics: &mut crate::graphics::Graphics) {
+        // release textures for dropped buffers
+        for id in self.dropped_buffer.drain(..) {
+            graphics.drop_buffer(id);
         }
-        // set cursor icon
-        if running {
-            miniquad::window::set_mouse_cursor(CursorIcon::Wait);
-        } else if !self.overlay.is_none() {
-            miniquad::window::set_mouse_cursor(CursorIcon::Default);
-        } else if self.mouse_on_layer().is_none()
-            && self.mouse_on_palette().is_none()
-            && self
-                .buffers
-                .get(self.current)
-                .is_some_and(|b| b.cursor().is_some())
-        {
-            match self.tool {
-                Tool::Move => miniquad::window::set_mouse_cursor(CursorIcon::Move),
-                _ => miniquad::window::set_mouse_cursor(CursorIcon::Crosshair),
-            }
+        if self.system_cursor {
+            miniquad::window::show_mouse(true);
+            miniquad::window::set_mouse_cursor(CursorIcon::Crosshair);
         } else {
-            miniquad::window::set_mouse_cursor(CursorIcon::Default);
+            miniquad::window::show_mouse(false);
         }
-        let mut frame_changed = false;
+        // TODO set cursor icon
         if let Some(buffer) = self.buffers.get_mut(self.current) {
             // these are the updates that should be done even when the lua script is blocking
             if buffer.fit {
                 buffer.fit_to_view(self.screen);
             }
-            if !buffer.animation.paused {
-                frame_changed = buffer.do_animation(elapsed);
-            }
-            if running {
+            #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
+            if let Overlay::Running(..) = &mut self.overlay {
                 return;
             }
-            if frame_changed
-                && !buffer.edit_all
-                && self.mode.is_normal()
-                && matches!(self.tool, Tool::Brush(..))
+            if self
+                .tracker
+                .frame_tracked()
+                .is_some_and(|f| f != buffer.current_frame_id())
             {
-                self.tracker.trim()
+                self.tracker.set_frame(buffer.current_frame_id());
+                if !buffer.edit_all && self.mode.is_normal() && matches!(self.tool, Tool::Brush(..))
+                {
+                    self.tracker.trim()
+                }
             }
             if let Mode::Normal { paste_info, .. } = &mut self.mode {
                 if let Some(p) = paste_info {
@@ -1285,7 +1319,7 @@ impl Engine {
             if let Some(dir) = self.tracker.get_dir() {
                 match &mut self.mode {
                     Mode::Visual { modifier, .. } => self.tool.visual_preview(
-                        &self.tracker,
+                        &mut self.tracker,
                         buffer,
                         self.draw_mode.1,
                         *modifier,
@@ -1296,31 +1330,41 @@ impl Engine {
                         paste_info: None,
                         ..
                     } => {
-                        if let (Tool::Move, Some(r)) = (
-                            &self.tool,
-                            Register::new(buffer.image(), buffer.selection()),
-                        ) {
-                            let cut = crate::tool::cut(buffer.image(), buffer.selection());
-                            let img_idx = buffer.session.insert_image(&cut);
-                            tool::paste_preview(&r, buffer, &cut, dir, self.draw_mode.0);
-                            self.mode = Mode::paste(
-                                cut,
-                                img_idx,
-                                None,
-                                r,
-                                None,
-                                None,
-                                buffer.current_layer_id(),
-                                buffer.current_frame_id(),
-                            );
+                        if self.tool == Tool::Move && !buffer.selection().is_empty() {
+                            if let Some(r) = Register::new(buffer.image(), buffer.selection()) {
+                                let cut = crate::tool::cut(buffer.image(), buffer.selection());
+                                let img_idx = buffer.session.insert_image(&cut);
+                                buffer.animation.paused = true;
+                                tool::paste_preview(
+                                    &r,
+                                    buffer,
+                                    &cut,
+                                    dir,
+                                    self.draw_mode.0,
+                                    (!self.software_render).then_some(graphics),
+                                );
+                                self.mode = Mode::paste(
+                                    cut,
+                                    img_idx,
+                                    None,
+                                    r,
+                                    None,
+                                    None,
+                                    buffer.current_layer_id(),
+                                    buffer.current_frame_id(),
+                                );
+                            } else {
+                                // TODO
+                            }
                         } else {
                             self.tool.normal_preview(
-                                &self.tracker,
+                                &mut self.tracker,
                                 buffer,
                                 self.draw_mode.0,
                                 self.color,
                                 *modifier,
                                 &self.tool_setting,
+                                (!self.software_render).then_some(graphics),
                             );
                         }
                     }
@@ -1335,13 +1379,82 @@ impl Engine {
                         ..
                     } => {
                         let offset = (offset.0 + dir.0, offset.1 + dir.1);
-                        tool::paste_preview(register, buffer, image, offset, self.draw_mode.0);
+                        buffer.animation.paused = true;
+                        tool::paste_preview(
+                            register,
+                            buffer,
+                            image,
+                            offset,
+                            self.draw_mode.0,
+                            (!self.software_render).then_some(graphics),
+                        );
+                    }
+                }
+            } else if matches!(self.tool, Tool::Brush(..)) && !self.picker && self.overlay.is_none()
+            {
+                self.dummy.start(
+                    buffer.cursor(),
+                    tool::InputType::Mouse,
+                    Some(buffer.current_frame_id()),
+                );
+                match &mut self.mode {
+                    Mode::Visual { modifier, .. } => self.tool.visual_preview(
+                        &mut self.dummy,
+                        buffer,
+                        self.draw_mode.1,
+                        *modifier,
+                        &self.tool_setting,
+                    ),
+                    Mode::Normal { modifier, .. } => {
+                        buffer.clear_temporary();
+                        self.tool.normal_preview(
+                            &mut self.dummy,
+                            buffer,
+                            self.draw_mode.0,
+                            self.color,
+                            *modifier,
+                            &self.tool_setting,
+                            (!self.software_render).then_some(graphics),
+                        );
                     }
                 }
             }
         }
     }
-    // whether another update needs to be scheduled
+    // no actual events are being handled
+    // - increase timer for animation
+    // - poll running lua script
+    pub fn cheap_update(&mut self) -> bool {
+        let elapsed = self.time.elapsed();
+        self.time.update();
+        if let Some(buffer) = self.buffers.get_mut(self.current) {
+            if !buffer.animation.paused {
+                buffer.do_animation(elapsed);
+            }
+        }
+        #[cfg(all(feature = "lua", not(target_arch = "wasm32")))]
+        if let Overlay::Running(handle, _) = &mut self.overlay {
+            if handle.is_finished() {
+                let lua_handle = self.overlay.take_handle().expect("");
+                self.overlay = Overlay::None;
+                if let Err(e) = self.finish_script(lua_handle) {
+                    self.mode.error(&e.to_string());
+                }
+            }
+        }
+        if let Some(buffer) = self.buffers.get_mut(self.current) {
+            self.tracker
+                .frame_tracked()
+                .is_some_and(|f| f != buffer.current_frame_id())
+                || self
+                    .dummy
+                    .frame_tracked()
+                    .is_some_and(|f| f != buffer.current_frame_id())
+        } else {
+            false
+        }
+    }
+    // whether another (cheap) update needs to be scheduled
     // true if a script is running or animation is playing or non-empty selection (dotted line
     // animation)
     pub fn needs_update(&self) -> bool {

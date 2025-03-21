@@ -108,7 +108,7 @@ impl Engine {
                 );
             } else if self.picker {
                 if let Some(buffer) = self.buffers.get(self.current) {
-                    if let Some((_, color)) = buffer.cursor_color() {
+                    if let Some(color) = buffer.picker(buffer.cursor()) {
                         color.print(
                             console,
                             1,
@@ -169,11 +169,8 @@ impl Engine {
                 if let (Tool::Move, Some(dir)) = (&self.tool, self.tracker.get_dir()) {
                     right_info.push_str(&format!("(move {} {}) ", dir.0, dir.1));
                 }
-                if let Some((x, y)) = buffer.cursor() {
-                    right_info.push_str(&format!("{} {}", x + 1, y + 1));
-                } else {
-                    right_info.push('-');
-                }
+                let (x, y) = buffer.cursor();
+                right_info.push_str(&format!("{} {}", x + 1, y + 1));
                 right_info.push_str(&format!(" [{} {}]", buffer.width(), buffer.height()));
                 console.print(
                     &right_info,
@@ -340,7 +337,7 @@ impl Engine {
                     self.background.into(),
                 );
                 if let Some(c) = &input.completions {
-                    let len = (c.2.len()).min(h as usize - 2);
+                    let len = (c.2.len()).min((h as usize).saturating_sub(2));
                     let high = c.1 + (c.2.len() - c.1).min(len);
                     let low = high - len.min(high);
                     let w = (low..high).map(|i| c.2[i].len()).max().unwrap();
@@ -507,63 +504,65 @@ impl Engine {
                 graphics.draw_rect_filled(Rect::new(x, y + offset - 1., w, 2.), Color::BLACK.into())
             }
             let time = self.time.elapsed_abs() as f32 / 1000.;
+            let rect = buffer.display_selection_rect();
             if self.mode.is_visual() {
-                graphics.draw_selection(buffer.id(), viewport, self.visual_color, time)
+                graphics.draw_selection(buffer.id(), rect, self.visual_color, time)
             } else {
-                graphics.draw_selection(buffer.id(), viewport, Color(0, 0, 0, 0), time)
+                graphics.draw_selection(buffer.id(), rect, (0, 0, 0, 0).into(), time)
             }
-            if let Some(cursor) = buffer.cursor() {
-                if (!matches!(self.tool, Tool::Move) || self.tracker.is_keyboard_in_use())
-                    && self.overlay.is_none()
-                {
-                    let (width, height) = (buffer.width() as _, buffer.height() as _);
-                    let sx = width - 1 + buffer.symmetry().x_offset - cursor.0;
-                    let sy = height - 1 + buffer.symmetry().y_offset - cursor.1;
-                    let sx_in_bound = 0 <= sx && sx < width;
-                    let sy_in_bound = 0 <= sy && sy < height;
-                    if buffer.symmetry().x && sx_in_bound {
-                        graphics.draw_rect_outline(
-                            Rect::new(
-                                x + sx as f32 * scale,
-                                y + cursor.1 as f32 * scale,
-                                scale,
-                                scale,
-                            ),
-                            margin,
-                            main_color,
-                        );
-                    }
-                    if buffer.symmetry().y && sy_in_bound {
-                        graphics.draw_rect_outline(
-                            Rect::new(
-                                x + cursor.0 as f32 * scale,
-                                y + sy as f32 * scale,
-                                scale,
-                                scale,
-                            ),
-                            margin,
-                            main_color,
-                        );
-                    }
-                    if buffer.symmetry().x && buffer.symmetry().y && sx_in_bound && sy_in_bound {
-                        graphics.draw_rect_outline(
-                            Rect::new(x + sx as f32 * scale, y + sy as f32 * scale, scale, scale),
-                            margin,
-                            main_color,
-                        );
-                    }
-                    graphics.draw_rect_outline_fancy(
+            let cursor = buffer.cursor();
+            if !matches!(self.tool, Tool::Move) && self.overlay.is_none() {
+                let (width, height) = (buffer.width() as _, buffer.height() as _);
+                let cx = cursor.0;
+                let cy = cursor.1;
+                let cx_in_bound = 0 <= cx && cx < width;
+                let cy_in_bound = 0 <= cy && cy < height;
+                let sx = width - 1 + buffer.symmetry().x_offset - cursor.0;
+                let sy = height - 1 + buffer.symmetry().y_offset - cursor.1;
+                let sx_in_bound = 0 <= sx && sx < width;
+                let sy_in_bound = 0 <= sy && sy < height;
+                if buffer.symmetry().x && sx_in_bound && cy_in_bound {
+                    graphics.draw_rect_outline(
                         Rect::new(
-                            x + cursor.0 as f32 * scale,
+                            x + sx as f32 * scale,
                             y + cursor.1 as f32 * scale,
                             scale,
                             scale,
                         ),
                         margin,
-                        outline_color1.into(),
                         main_color,
                     );
                 }
+                if buffer.symmetry().y && cx_in_bound && sy_in_bound {
+                    graphics.draw_rect_outline(
+                        Rect::new(
+                            x + cursor.0 as f32 * scale,
+                            y + sy as f32 * scale,
+                            scale,
+                            scale,
+                        ),
+                        margin,
+                        main_color,
+                    );
+                }
+                if buffer.symmetry().x && buffer.symmetry().y && sx_in_bound && sy_in_bound {
+                    graphics.draw_rect_outline(
+                        Rect::new(x + sx as f32 * scale, y + sy as f32 * scale, scale, scale),
+                        margin,
+                        main_color,
+                    );
+                }
+                graphics.draw_rect_outline_fancy(
+                    Rect::new(
+                        x + cursor.0 as f32 * scale,
+                        y + cursor.1 as f32 * scale,
+                        scale,
+                        scale,
+                    ),
+                    margin,
+                    outline_color1.into(),
+                    main_color,
+                );
             }
         }
         if let Overlay::Help(..) = &self.overlay {

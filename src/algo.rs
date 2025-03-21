@@ -1,19 +1,23 @@
 use crate::color::Color;
 use crate::grid::Grid;
 use crate::image::{Image, Symmetry};
+use crate::parser::Size;
+use crate::selection::Selection;
+use crate::utils::Rect;
 
+type Shape = (Vec<(i32, i32)>, Rect<i32>);
 #[derive(Clone)]
 pub enum Brush {
     Rect(u8),
-    Round(u8),
-    Custom(Selection),
+    Round(u8, Shape),
+    Custom(Shape),
 }
 
 impl std::fmt::Display for Brush {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Brush::Rect(size) => f.write_fmt(format_args!("[{size}]"))?,
-            Brush::Round(size) => f.write_fmt(format_args!("({size})"))?,
+            Brush::Round(size, ..) => f.write_fmt(format_args!("({size})"))?,
             Brush::Custom(..) => f.write_fmt(format_args!("custom"))?,
         }
         Ok(())
@@ -21,6 +25,12 @@ impl std::fmt::Display for Brush {
 }
 
 impl Brush {
+    fn round(size: u8) -> Self {
+        let size = size.max(1);
+        let s = size as i32;
+        let selection = _ellipse(((-s / 2, -s / 2), ((s - 1) / 2, (s - 1) / 2)));
+        Self::Round(size, (selection.iter().collect(), selection.capacity()))
+    }
     pub fn set(&mut self, shape: &str, selection: Option<Selection>) -> Result<(), ()> {
         match shape {
             "1" => {
@@ -43,10 +53,11 @@ impl Brush {
                     .map(|v| v.max(1))
                     .ok()
                     .unwrap_or_else(|| self.size());
-                *self = Brush::Round(size);
+                *self = Brush::round(size)
             }
             "%" => {
-                *self = Brush::Custom(selection.ok_or(())?);
+                let selection = selection.ok_or(())?;
+                *self = Brush::Custom((selection.iter().collect(), selection.capacity()));
             }
             _ => Err(())?,
         }
@@ -54,38 +65,49 @@ impl Brush {
     }
     pub fn size(&self) -> u8 {
         match self {
-            Brush::Rect(size) | Brush::Round(size) => *size,
+            Brush::Rect(size) | Brush::Round(size, _) => *size,
             Brush::Custom(..) => 1,
         }
     }
-    pub fn at(&self, x: i32, y: i32) -> Vec<(i32, i32)> {
+    pub fn set_size(&mut self, size: u8) {
+        let size = size.max(1);
+        match self {
+            Brush::Rect(s) => *s = size,
+            Brush::Round(s, _) => {
+                if size != *s {
+                    *self = Brush::round(size);
+                }
+            }
+            _ => (),
+        }
+    }
+    pub fn size_increase(&mut self, value: u8) {
+        self.set_size(self.size().saturating_add(value));
+    }
+    pub fn size_decrease(&mut self, value: u8) {
+        self.set_size(self.size().saturating_sub(value));
+    }
+    fn paint_at(&self, selection: &mut Selection, pos: (i32, i32)) {
+        let (x, y) = pos;
         match self {
             Brush::Rect(size) => {
                 let size = *size as i32;
-                let mut brush = Vec::new();
-                for i in -size / 2..(size + 1) / 2 {
-                    for j in -size / 2..(size + 1) / 2 {
-                        brush.push((x + i, y + j));
-                    }
-                }
-                brush
+                selection.insert_rect(crate::utils::Rect::new(
+                    x - size / 2,
+                    y - size / 2,
+                    size,
+                    size,
+                ));
             }
-            Brush::Round(size) => {
-                let size = *size as i32;
-                _ellipse((
-                    (x - size / 2, y - size / 2),
-                    (x + (size - 1) / 2, y + (size - 1) / 2),
-                ))
-                .into_iter()
-                .collect()
+            Brush::Round(_, shape) | Brush::Custom(shape) => {
+                selection.extend_with_bound(
+                    shape.0.iter().map(|(dx, dy)| (dx + x, dy + y)),
+                    shape.1.offset_by((x, y)),
+                );
             }
-            Brush::Custom(shape) => shape.iter().map(|(dx, dy)| (x + dx, y + dy)).collect(),
         }
     }
 }
-
-use std::collections::HashSet;
-pub type Selection = HashSet<(i32, i32)>;
 
 fn _line(p0: (i32, i32), p1: (i32, i32)) -> Vec<(i32, i32)> {
     let (x0, y0) = p0;
@@ -115,7 +137,7 @@ fn _line(p0: (i32, i32), p1: (i32, i32)) -> Vec<(i32, i32)> {
     result
 }
 
-fn _lasso(trace: Vec<(i32, i32)>, brush: &Brush) -> Selection {
+fn _lasso(trace: &[(i32, i32)], brush: &Brush) -> Selection {
     let left = trace.iter().min_by_key(|p| p.0).unwrap().0;
     let right = trace.iter().max_by_key(|p| p.0).unwrap().0;
     let top = trace.iter().min_by_key(|p| p.1).unwrap().1;
@@ -128,10 +150,8 @@ fn _lasso(trace: Vec<(i32, i32)>, brush: &Brush) -> Selection {
         let pos1 = trace[i];
         let pos2 = trace[if i < trace.len() - 1 { i + 1 } else { 0 }];
         let line = _line(pos1, pos2);
-        for (x, y) in &line {
-            for p in brush.at(*x, *y) {
-                result.insert(p);
-            }
+        for p in &line {
+            brush.paint_at(&mut result, *p);
         }
         for j in 0..line.len() {
             let (x, y) = line[j];
@@ -155,15 +175,13 @@ fn _lasso(trace: Vec<(i32, i32)>, brush: &Brush) -> Selection {
     result
 }
 
-fn _brush(trace: Vec<(i32, i32)>, brush: &Brush) -> Selection {
+fn _brush(trace: &[(i32, i32)], brush: &Brush) -> Selection {
     let mut result = Selection::new();
     if let Some(mut p1) = trace.first().copied() {
         for p2 in trace {
-            for (x, y) in _line(p1, p2) {
-                for p in brush.at(x, y) {
-                    result.insert(p);
-                }
-                p1 = p2;
+            for p in _line(p1, *p2) {
+                brush.paint_at(&mut result, p);
+                p1 = *p2;
             }
         }
     }
@@ -171,34 +189,33 @@ fn _brush(trace: Vec<(i32, i32)>, brush: &Brush) -> Selection {
 }
 
 pub fn brush(
-    image: &Image,
-    trace: Vec<(i32, i32)>,
+    size: Size,
+    trace: &[(i32, i32)],
     symmetry: Symmetry,
     brush: &Brush,
     outline: bool,
 ) -> Selection {
-    let (w, h) = (image.width() as i32, image.height() as i32);
-    let sym = symmetry.helper(w, h);
+    let sym = symmetry.helper(size.0 as _, size.1 as _);
     let func = if outline { _brush } else { _lasso };
     let selection = (func)(trace, brush);
     let mut result = selection.clone();
     if symmetry.x {
-        result.extend(selection.iter().map(|p| sym.sym_x(*p)));
+        result.extend(selection.iter().map(|p| sym.sym_x(p)));
     }
     if symmetry.y {
-        result.extend(selection.iter().map(|p| sym.sym_y(*p)));
+        result.extend(selection.iter().map(|p| sym.sym_y(p)));
     }
     if symmetry.x && symmetry.y {
-        result.extend(selection.iter().map(|p| sym.sym_x_y(*p)));
+        result.extend(selection.iter().map(|p| sym.sym_x_y(p)));
     }
     result
 }
 
 fn _rect(bounds: ((i32, i32), (i32, i32))) -> Selection {
-    let x0 = bounds.0 .0.min(bounds.1 .0);
-    let y0 = bounds.0 .1.min(bounds.1 .1);
-    let x1 = bounds.0 .0.max(bounds.1 .0);
-    let y1 = bounds.0 .1.max(bounds.1 .1);
+    let x0 = bounds.0.0.min(bounds.1.0);
+    let y0 = bounds.0.1.min(bounds.1.1);
+    let x1 = bounds.0.0.max(bounds.1.0);
+    let y1 = bounds.0.1.max(bounds.1.1);
     let mut result = Selection::new();
     for x in x0..=x1 {
         for y in y0..=y1 {
@@ -209,10 +226,10 @@ fn _rect(bounds: ((i32, i32), (i32, i32))) -> Selection {
 }
 
 fn _rect_outline(bounds: ((i32, i32), (i32, i32))) -> Selection {
-    let x0 = bounds.0 .0.min(bounds.1 .0);
-    let y0 = bounds.0 .1.min(bounds.1 .1);
-    let x1 = bounds.0 .0.max(bounds.1 .0);
-    let y1 = bounds.0 .1.max(bounds.1 .1);
+    let x0 = bounds.0.0.min(bounds.1.0);
+    let y0 = bounds.0.1.min(bounds.1.1);
+    let x1 = bounds.0.0.max(bounds.1.0);
+    let y1 = bounds.0.1.max(bounds.1.1);
     let mut result = Selection::new();
     for x in x0..=x1 {
         result.insert((x, y0));
@@ -226,13 +243,12 @@ fn _rect_outline(bounds: ((i32, i32), (i32, i32))) -> Selection {
 }
 
 pub fn rect(
-    image: &Image,
+    size: Size,
     bounds: ((i32, i32), (i32, i32)),
     symmetry: Symmetry,
     outline: bool,
 ) -> Selection {
-    let (w, h) = (image.width() as i32, image.height() as i32);
-    let sym = symmetry.helper(w, h);
+    let sym = symmetry.helper(size.0 as _, size.1 as _);
     let func = if outline { _rect_outline } else { _rect };
     let mut result = (func)(bounds);
     if symmetry.x {
@@ -283,10 +299,10 @@ fn _arc(dx: i32, dy: i32) -> Vec<(i32, i32)> {
 }
 
 fn _ellipse(bounds: ((i32, i32), (i32, i32))) -> Selection {
-    let x0 = bounds.0 .0.min(bounds.1 .0);
-    let y0 = bounds.0 .1.min(bounds.1 .1);
-    let x1 = bounds.0 .0.max(bounds.1 .0);
-    let y1 = bounds.0 .1.max(bounds.1 .1);
+    let x0 = bounds.0.0.min(bounds.1.0);
+    let y0 = bounds.0.1.min(bounds.1.1);
+    let x1 = bounds.0.0.max(bounds.1.0);
+    let y1 = bounds.0.1.max(bounds.1.1);
     let dx = x1 - x0;
     let dy = y1 - y0;
     let mut result = Selection::new();
@@ -304,10 +320,10 @@ fn _ellipse(bounds: ((i32, i32), (i32, i32))) -> Selection {
 }
 
 fn _ellipse_outline(bounds: ((i32, i32), (i32, i32))) -> Selection {
-    let x0 = bounds.0 .0.min(bounds.1 .0);
-    let y0 = bounds.0 .1.min(bounds.1 .1);
-    let x1 = bounds.0 .0.max(bounds.1 .0);
-    let y1 = bounds.0 .1.max(bounds.1 .1);
+    let x0 = bounds.0.0.min(bounds.1.0);
+    let y0 = bounds.0.1.min(bounds.1.1);
+    let x1 = bounds.0.0.max(bounds.1.0);
+    let y1 = bounds.0.1.max(bounds.1.1);
     let dx = x1 - x0;
     let dy = y1 - y0;
     let mut result = Selection::new();
@@ -321,13 +337,12 @@ fn _ellipse_outline(bounds: ((i32, i32), (i32, i32))) -> Selection {
 }
 
 pub fn ellipse(
-    image: &Image,
+    size: Size,
     bounds: ((i32, i32), (i32, i32)),
     symmetry: Symmetry,
     outline: bool,
 ) -> Selection {
-    let (w, h) = (image.width() as i32, image.height() as i32);
-    let sym = symmetry.helper(w, h);
+    let sym = symmetry.helper(size.0 as _, size.1 as _);
     let func = if outline { _ellipse_outline } else { _ellipse };
     let mut result = (func)(bounds);
     if symmetry.x {
@@ -344,25 +359,20 @@ pub fn ellipse(
 
 fn _line_brush(bounds: ((i32, i32), (i32, i32)), brush: &Brush) -> Selection {
     let mut result = Selection::new();
-    for (x, y) in _line(bounds.0, bounds.1) {
-        for p in brush.at(x, y) {
-            result.insert(p);
-        }
+    for p in _line(bounds.0, bounds.1) {
+        brush.paint_at(&mut result, p);
     }
     result
 }
 
 pub fn line(
-    image: &Image,
+    size: Size,
     bounds: ((i32, i32), (i32, i32)),
     symmetry: Symmetry,
     brush: &Brush,
 ) -> Selection {
-    let (w, h) = (image.width() as i32, image.height() as i32);
-    let sym = symmetry.helper(w, h);
-    let mut result: HashSet<_> = (_line_brush)((bounds.0, bounds.1), brush)
-        .into_iter()
-        .collect();
+    let sym = symmetry.helper(size.0 as _, size.1 as _);
+    let mut result: Selection = (_line_brush)((bounds.0, bounds.1), brush).iter().collect();
     if symmetry.x {
         result.extend((_line_brush)(
             (sym.sym_x(bounds.0), sym.sym_x(bounds.1)),
@@ -405,7 +415,7 @@ fn _flood(image: &Image, mask: Option<&Selection>, cursor: (i32, i32), tolerance
                     (node.0, node.1 + 1),
                 ] {
                     if visited.get(nbr.0, nbr.1).is_some_and(|v| !*v)
-                        && mask.is_none_or(|m| m.contains(&nbr))
+                        && mask.is_none_or(|m| m.contains(nbr))
                     {
                         fringe.push(nbr);
                     }
@@ -424,7 +434,7 @@ fn _flood_discon(
 ) -> Selection {
     let mut result = Selection::new();
     if let Some(start) = image.get(cursor.0, cursor.1) {
-        result.extend(&select(image, mask, |c| c.diff(start) <= tolerance))
+        result.extend(select(image, mask, |c| c.diff(start) <= tolerance))
     }
     result
 }
@@ -443,13 +453,13 @@ pub fn flood(
     let func = if discon { _flood_discon } else { _flood };
     let mut result = (func)(image, mask, cursor, tolerance);
     if symmetry.x {
-        result.extend(&(func)(image, mask, sym.sym_x((x, y)), tolerance));
+        result.extend((func)(image, mask, sym.sym_x((x, y)), tolerance));
     }
     if symmetry.y {
-        result.extend(&(func)(image, mask, sym.sym_y((x, y)), tolerance));
+        result.extend((func)(image, mask, sym.sym_y((x, y)), tolerance));
     }
     if symmetry.x && symmetry.y {
-        result.extend(&(func)(image, mask, sym.sym_x_y((x, y)), tolerance));
+        result.extend((func)(image, mask, sym.sym_x_y((x, y)), tolerance));
     }
     result
 }
@@ -462,7 +472,6 @@ fn select<P: FnMut(Color) -> bool>(
     if let Some(m) = mask {
         m.iter()
             .filter(|(i, j)| image.get(*i, *j).is_some_and(|c| (predicate)(*c)))
-            .copied()
             .collect()
     } else {
         (0..image.width() as i32 * image.height() as i32)
@@ -473,8 +482,8 @@ fn select<P: FnMut(Color) -> bool>(
 }
 
 pub fn r#move(selection: &Selection, dir: (i32, i32)) -> Selection {
-    let mut result = Selection::new();
-    result.extend(selection.iter().map(|(x, y)| (*x + dir.0, *y + dir.1)));
+    let mut result = selection.clone();
+    result.offset_by(dir);
     result
 }
 
@@ -483,7 +492,7 @@ pub fn flip_x(image: &Image, selection: &Selection, symmetry: Symmetry) -> Selec
     let offset = if symmetry.x { symmetry.x_offset } else { 0 };
     selection
         .iter()
-        .map(|(x, y)| (width as i32 - 1 - x + offset, *y))
+        .map(|(x, y)| (width as i32 - 1 - x + offset, y))
         .collect()
 }
 
@@ -492,7 +501,7 @@ pub fn flip_y(image: &Image, selection: &Selection, symmetry: Symmetry) -> Selec
     let offset = if symmetry.y { symmetry.y_offset } else { 0 };
     selection
         .iter()
-        .map(|(x, y)| (*x, height as i32 - 1 - y + offset))
+        .map(|(x, y)| (x, height as i32 - 1 - y + offset))
         .collect()
 }
 
@@ -521,18 +530,18 @@ mod test {
         for i in 0..50 {
             for j in 0..i {
                 let e1: Selection = _ellipse_outline(((0, 0), (i, j)))
-                    .into_iter()
+                    .iter()
                     .map(|(y, x)| (x, y))
                     .collect();
                 let e2 = _ellipse_outline(((j, i), (0, 0)));
-                assert_eq!(e1, e2);
+                assert_eq!(e1.to_vec(), e2.to_vec());
 
                 let e1: Selection = _ellipse(((0, 0), (i, j)))
-                    .into_iter()
+                    .iter()
                     .map(|(y, x)| (x, y))
                     .collect();
                 let e2 = _ellipse(((j, i), (0, 0)));
-                assert_eq!(e1, e2);
+                assert_eq!(e1.to_vec(), e2.to_vec());
             }
         }
     }

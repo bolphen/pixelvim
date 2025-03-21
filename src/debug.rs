@@ -6,10 +6,10 @@ pub struct Allocator(System, AtomicU64);
 unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         self.1.fetch_add(l.size() as u64, Ordering::SeqCst);
-        self.0.alloc(l)
+        unsafe { self.0.alloc(l) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, l: Layout) {
-        self.0.dealloc(ptr, l);
+        unsafe { self.0.dealloc(ptr, l) };
         self.1.fetch_sub(l.size() as u64, Ordering::SeqCst);
     }
 }

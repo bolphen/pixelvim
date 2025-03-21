@@ -3,9 +3,10 @@ use nanoserde::{DeBin, SerBin};
 use std::collections::HashSet;
 
 use crate::color::Color;
+use crate::grid::Grid;
 use crate::parser::Size;
 
-pub type Image = crate::grid::Grid<Color>;
+pub type Image = Grid<Color>;
 
 impl Image {
     pub fn size(&self) -> Size {
@@ -22,23 +23,37 @@ impl Image {
         bytes
     }
     pub fn blank(&self) -> Image {
-        Image::new_with(self.width(), self.height(), Color(0, 0, 0, 0))
+        Image::new(self.width(), self.height())
     }
     pub fn colors(&self) -> HashSet<Color> {
         self.data().iter().copied().collect()
     }
     pub fn sub_image(&self, x: usize, y: usize, w: usize, h: usize) -> Option<Image> {
-        if x + w <= self.width() && y + h <= self.height() {
-            let mut sub = Image::new_with(w, h, Color(0, 0, 0, 0));
-            for i in 0..w as i32 {
-                for j in 0..h as i32 {
-                    *sub.get_unchecked_mut(i, j) = *self.get_unchecked(i + x as i32, j + y as i32);
+        self.sub_grid(x, y, w, h)
+    }
+    pub fn effective_area(
+        &self,
+        mut predicate: impl FnMut((i32, i32), Color) -> Option<bool>,
+    ) -> Option<((i32, i32), Image)> {
+        let (mut x_min, mut y_min, mut x_max, mut y_max) =
+            (self.width() as i32, self.height() as i32, 0i32, 0i32);
+        for y in 0..self.height() as i32 {
+            for x in 0..self.width() as i32 {
+                if (predicate)((x, y), *self.get_unchecked(x, y))? {
+                    x_min = x_min.min(x);
+                    y_min = y_min.min(y);
+                    x_max = x_max.max(x + 1);
+                    y_max = y_max.max(y + 1);
                 }
             }
-            Some(sub)
-        } else {
-            None
         }
+        let w = (x_max - x_min).max(0);
+        let h = (y_max - y_min).max(0);
+        Some((
+            (x_min, y_min),
+            self.sub_image(x_min as _, y_min as _, w as _, h as _)
+                .unwrap(),
+        ))
     }
 }
 

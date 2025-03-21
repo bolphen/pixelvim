@@ -66,7 +66,7 @@ function wfc:init(image, outputWidth, outputHeight, windowSize_)
   for x = 1, image.width do
     for y = 1, image.height do
       local pixel = image:get(x, y)
-      local color = (pixel.r << 24) + (pixel.g << 16) + (pixel.b << 8) + pixel.a
+      local color = (pixel.r * 2^24) + (pixel.g * 2^16) + (pixel.b * 2^8) + pixel.a
       if not colorIndices[color] then
         colors[#colors + 1] = pixel
         colorIndices[color] = #colors

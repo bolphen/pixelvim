@@ -1,0 +1,53 @@
+on:
+  push:
+    branch:
+      release
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref }}
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: wasm32-unknown-unknown
+        override: true
+
+    - name: Submodules
+      run: git submodule update --init --recursive
+
+    - name: Build
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --profile=release-web --target=wasm32-unknown-unknown
+
+    - name: Setup web
+      run: cp assets/wasm/* target/wasm32-unknown-unknown/release-web;
+           cp .gitignore target;
+           git fetch origin web;
+           git checkout web;
+           mv target/.gitignore .;
+           cp target/wasm32-unknown-unknown/release-web/pixelvim.wasm .;
+           cp target/wasm32-unknown-unknown/release-web/index.html .;
+           cp target/wasm32-unknown-unknown/release-web/favicon.ico .;
+           cp target/wasm32-unknown-unknown/release-web/*.js .;
+           git add -A;
+           git rm -rf miniquad;
+           git rm -rf nanoserde;
+           git rm -rf ase;
+
+    - name: Autocommit
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: Automated Change
+        branch: web
+        push_options: '--force'

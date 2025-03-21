@@ -1,7 +1,7 @@
 use nanoserde::{DeBin, SerBin};
 
-use crate::algo::Selection;
 use crate::image::{Image, Symmetry};
+use crate::selection::Selection;
 
 #[derive(Clone, SerBin, DeBin)]
 pub struct Register {
@@ -32,13 +32,15 @@ impl Register {
             }
         })
     }
+    #[inline]
     pub fn width(&self) -> usize {
         self.content.width()
     }
+    #[inline]
     pub fn height(&self) -> usize {
         self.content.height()
     }
-    pub fn offset(mut self, offset: (i32, i32)) -> Self {
+    pub fn with_offset(mut self, offset: (i32, i32)) -> Self {
         self.offset = offset;
         self
     }

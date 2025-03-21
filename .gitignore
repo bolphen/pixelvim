@@ -3,4 +3,6 @@ Cargo.lock
 tags
 *.png
 *.gif
+*.ase
+*.swp
 _*

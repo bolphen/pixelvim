@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Terminal=false
+Exec=pixelvim %U
+Name=pixelvim
+StartupWMClass=pixelvim
+Icon=pixelvim
+MimeType=image/png;image/gif;image/x-aseprite;
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=pvim

@@ -13,12 +13,16 @@ available commands. Here are the basic ones.
 
 * `:new` or `:new 64 64` will create an empty canvas.
 
-* `:edit <filename>` opens image from the disk. Currently png, gif, and
-  aseprite formats are supported. You can also drag-and-drop file into the
-  window to open them (should work on Linux and in browser).
+* `:edit <filename>` opens image from the disk. You can also drag-and-drop file
+  into the window to open them (should work on Linux and in browser).
 
-* `:write <filename>` saves image to the disk. Currently only png and gif are
-  supported.
+* `:write <filename>` saves image to the disk.
+
+Currently loading and saving png, gif, and aseprite formats are supported.
+(Note that not all aseprite features are supported; only layers, frames, and
+palette are loaded and saved. So if your aseprite file contains fancier
+features, be careful not saving over the same file, otherwise these data will
+be lost.)
 
 DATA RECOVERY
 =============
@@ -44,7 +48,8 @@ There are two modes:
 
 * Visual mode:
     You can use the same tools, but instead of drawing directly on the canvas,
-    you add to or subtract from a selection.
+    you add to or subtract from a selection (aka marquee tools), which can be
+    used as a mask for drawing or for manipulating the content within.
 
 You can distinguish the modes via the colored outline: normal is gray while
 visual is orange.
@@ -220,6 +225,11 @@ are currently missing.
     * In "edit one" or "live" mode, changes apply to a single frame. Since you
       can draw while the animation is playing, this is useful for creating
       particle effects (fire, sparks, snow, ...)
+
+* Note that live edit during animation is limited when there is an active
+  selection: you can still use the selection as mask for drawing or edit it in
+  visual mode, but you cannot move the content of the selection live: doing so
+  will force pausing the animation.
 
 LUA EXTENSION
 =============

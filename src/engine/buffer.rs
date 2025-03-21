@@ -1,12 +1,12 @@
 use nanoserde::{DeBin, SerBin};
 
-use crate::algo::Selection;
 use crate::color::Color;
 use crate::compression::{Compressed, Compressible};
 use crate::error::EditError;
 use crate::graphics::Graphics;
 use crate::image::{Image, Symmetry};
 use crate::parser::Size;
+use crate::selection::Selection;
 use crate::utils::Rect;
 
 pub use super::history::{FrameId, ImgIndex, LayerId, PasteFrom, RegIndex};
@@ -28,12 +28,6 @@ impl BufferId {
 pub struct Metadata {
     pub path: Option<PathBuf>,
     pub swap: Option<PathBuf>,
-}
-
-#[derive(Default)]
-struct BufferCursor {
-    cursor: Option<(i32, i32)>,
-    mouse: (f32, f32),
 }
 
 #[derive(Clone, Copy)]
@@ -71,8 +65,8 @@ pub struct Buffer {
     selection_dirty: bool,
     texture_clean: HashSet<(LayerId, FrameId)>,
     composed: HashMap<FrameId, Image>,
-    pub viewport: Rect,
-    cursor: BufferCursor,
+    pub viewport: Rect<f32>,
+    cursor: (i32, i32),
     scale: f32,
     pub fit: bool,
     pub animation: Animation,
@@ -129,8 +123,16 @@ impl Buffer {
             self.session.delay().clone(),
         )
     }
-    pub fn picker(&self, cursor: (i32, i32)) -> Option<Color> {
-        self.composed().get(cursor.0, cursor.1).copied()
+    pub fn ase_data(&self) -> (Vec<Vec<&Image>>, Vec<bool>, Vec<u32>) {
+        (
+            self.session
+                .current_images()
+                .iter()
+                .map(|l| l.iter().collect())
+                .collect(),
+            self.get_visibility(),
+            self.session.delay().clone(),
+        )
     }
     pub fn new(
         layers: Vec<Vec<Image>>,
@@ -179,7 +181,7 @@ impl Buffer {
             metadata: Metadata::default(),
             viewport,
             scale: 10.,
-            cursor: BufferCursor::default(),
+            cursor: (0, 0),
             fit: true,
 
             session,
@@ -194,14 +196,26 @@ impl Buffer {
             edit_all: false,
         }
     }
+    #[inline]
     pub fn image(&self) -> &Image {
         self.session.image()
     }
+    #[inline]
     pub fn display_selection(&self) -> &Selection {
         self.temporary_selection
             .as_ref()
             .unwrap_or(self.session.selection())
     }
+    #[inline]
+    pub fn display_selection_rect(&self) -> Rect<f32> {
+        let selection = self.display_selection();
+        let x = self.viewport.x + selection.offset().0 as f32 * self.scale;
+        let y = self.viewport.y + selection.offset().1 as f32 * self.scale;
+        let w = selection.grid_width() as f32 * self.scale;
+        let h = selection.grid_height() as f32 * self.scale;
+        Rect::new(x, y, w, h)
+    }
+    #[inline]
     pub fn selection(&self) -> &Selection {
         self.session.selection()
     }
@@ -210,7 +224,6 @@ impl Buffer {
     /// hence resizing edit, undo, redo
     fn sanitize(&mut self) {
         self.update_viewport();
-        self.check_cursor();
         self.set_all_dirty();
     }
     pub fn coordinate(&mut self, mouse: (f32, f32)) -> (i32, i32) {
@@ -219,28 +232,15 @@ impl Buffer {
             ((mouse.1 - self.viewport.y) / self.scale).floor() as i32,
         )
     }
-    pub fn set_cursor(&mut self, mouse: (f32, f32)) -> Option<(i32, i32)> {
-        let (x, y) = self.coordinate(mouse);
-        self.cursor.mouse = mouse;
-        if self.image().is_in_bound(x, y) {
-            self.cursor.cursor = Some((x, y));
-        } else {
-            self.cursor.cursor = None;
-        }
-        self.cursor.cursor
+    pub fn set_cursor(&mut self, mouse: (f32, f32)) -> (i32, i32) {
+        self.cursor = self.coordinate(mouse);
+        self.cursor
     }
     pub fn zoom_at(&mut self, factor: f32, center: Option<(f32, f32)>) {
-        let center = center.unwrap_or({
-            (0., 0.)
-            // if self.cursor.is_none() {
-            //     self.center_at_cursor();
-            // }
-            // let cursor = self.cursor.expect("cursor not set");
-            // self.viewport.relpos_to_screen(RelPos(
-            //     cursor.0 as f32 / self.width() as f32,
-            //     cursor.1 as f32 / self.height() as f32,
-            // ))
-        });
+        let center = center.unwrap_or((
+            self.viewport.x + self.scale * self.cursor.0 as f32,
+            self.viewport.y + self.scale * self.cursor.1 as f32,
+        ));
         let scale = (self.scale * factor).clamp(0.5, 128.);
         let factor = scale / self.scale;
         self.scale = scale;
@@ -249,13 +249,6 @@ impl Buffer {
         self.viewport.w = self.width() as f32 * scale;
         self.viewport.h = self.height() as f32 * scale;
         self.fit = false;
-    }
-    fn check_cursor(&mut self) {
-        if let Some((x, y)) = self.cursor.cursor {
-            if !self.image().is_in_bound(x, y) {
-                self.cursor.cursor = None;
-            }
-        }
     }
     fn update_viewport(&mut self) {
         let (w, h) = (self.width(), self.height());
@@ -275,11 +268,14 @@ impl Buffer {
     pub fn texture_update(&mut self, graphics: &mut Graphics) {
         let (w, h) = (self.width() as u32, self.height() as u32);
         if self.selection_dirty {
-            let mut image = Image::new_with(w as _, h as _, Color(0, 0, 0, 0));
-            for (x, y) in self.display_selection() {
-                image.get_mut(*x, *y).map(|c| *c = Color::WHITE);
-            }
-            graphics.selection_update(self.id, w, h, image.raw_data());
+            let selection = self.display_selection();
+            let (w, h) = (selection.grid_width() as _, selection.grid_height() as _);
+            let bytes: Vec<u8> = selection
+                .grid_data()
+                .iter()
+                .map(|b| if *b { 255 } else { 0 })
+                .collect();
+            graphics.selection_update(self.id, w, h, &bytes[..]);
             self.selection_dirty = false;
         }
         let mut changed_frames = HashSet::new();
@@ -346,26 +342,16 @@ impl Buffer {
         }
         (result.msg, result.paste_data)
     }
-    pub fn cursor(&self) -> Option<(i32, i32)> {
-        self.cursor.cursor
+    pub fn cursor(&self) -> (i32, i32) {
+        self.cursor
     }
-    pub fn cursor_color(&self) -> Option<((i32, i32), Color)> {
-        let (x, y) = self.cursor.cursor?;
-        let color = self.composed().get(x, y)?;
-        Some(((x, y), *color))
+    pub fn picker(&self, cursor: (i32, i32)) -> Option<Color> {
+        self.composed().get(cursor.0, cursor.1).copied()
     }
     pub fn move_cursor(&mut self, dir: (i32, i32)) -> (i32, i32) {
-        let (w, h) = (self.width(), self.height());
-        if let Some((x, y)) = &mut self.cursor.cursor {
-            *x = (*x + dir.0).clamp(0, w as i32 - 1);
-            *y = (*y + dir.1).clamp(0, h as i32 - 1);
-            (*x, *y)
-        } else {
-            let (x, y) = self.coordinate(self.cursor.mouse);
-            let cursor = (x.clamp(0, w as i32 - 1), y.clamp(0, h as i32 - 1));
-            self.cursor.cursor = Some(cursor);
-            cursor
-        }
+        self.cursor.0 += dir.0;
+        self.cursor.1 += dir.1;
+        self.cursor
     }
     pub fn is_saved(&self) -> bool {
         self.session.is_saved()
@@ -416,6 +402,12 @@ impl Buffer {
             if size_changed {
                 self.sanitize();
             }
+        })
+    }
+    pub fn commit_temporary_selection(&mut self, name: &str) -> Option<()> {
+        self.temporary_selection.take().map(|s| {
+            self.session.history.edit_selection(name.into(), s);
+            self.selection_dirty = true;
         })
     }
     pub fn edit_infallible<F>(&mut self, name: &str, draw_fn: F, amend: bool)
@@ -472,36 +464,22 @@ impl Buffer {
         };
         self.batch_edit(name, frames, None, amend)
     }
-    pub fn preview<F>(&mut self, draw_fn: F, accumulate: bool)
+    pub fn preview<F>(&mut self, mut draw_fn: F)
     where
-        F: Clone + FnOnce(&Image, &Selection, Symmetry) -> Option<Image>,
+        F: FnMut(&Image, &Selection, Symmetry) -> Option<Image>,
     {
         let l = self.session.current_layer;
         let f = self.session.current_frame;
         let frames = if self.edit_all {
             (0..self.num_frames())
                 .filter_map(|f| {
-                    let image = self.session.layer_image(l, f);
-                    let old_image = if accumulate {
-                        self.temporary_images
-                            .get(&(self.session.layer_id(l), self.session.frame_id(f)))
-                            .unwrap_or(image)
-                    } else {
-                        image
-                    };
-                    (draw_fn.clone())(old_image, self.selection(), self.symmetry())
-                        .map(|im| ((l, f), im))
+                    let old_image = self.session.layer_image(l, f);
+                    (draw_fn)(old_image, self.selection(), self.symmetry()).map(|im| ((l, f), im))
                 })
                 .collect()
         } else {
-            let old_image = if accumulate {
-                self.temporary_images
-                    .get(&(self.session.layer_id(l), self.session.frame_id(f)))
-                    .unwrap_or(self.image())
-            } else {
-                self.image()
-            };
-            (draw_fn.clone())(old_image, self.selection(), self.symmetry())
+            let old_image = self.image();
+            (draw_fn)(old_image, self.selection(), self.symmetry())
                 .map(|im| HashMap::from([((l, f), im)]))
                 .unwrap_or_default()
         };
@@ -810,25 +788,124 @@ impl Buffer {
             }
             sliced.push(frame);
         }
-        self.session.slice(sliced);
+        self.session.restructure_frames("slice", sliced);
+        self.write_swap();
         self.sanitize();
     }
-    pub fn resize(&mut self, width: usize, height: usize) {
+    pub fn unslice(&mut self) {
+        let current = self.session.current_images();
+        let num_layers = self.num_layers();
+        let num_frames = self.num_frames();
+        let width = self.width();
+        let height = self.height();
+        let new_width = width * num_frames;
+        let mut unsliced: Vec<_> = (0..num_layers)
+            .map(|_| Image::new_with(new_width, height, (0, 0, 0, 0).into()))
+            .collect();
+        for (new, layer) in unsliced.iter_mut().zip(current.iter()) {
+            for (f, frame) in layer.iter().enumerate() {
+                frame.blit(new, (f * width) as i32, 0);
+            }
+        }
+        self.session.restructure_frames("unslice", vec![unsliced]);
+        self.write_swap();
+        self.sanitize();
+    }
+    pub fn resize_image(&mut self, width: usize, height: usize) {
+        self.clear_temporary();
         let mut resized = Vec::new();
         let current = self.session.current_images();
         for (l, layer) in current.iter().enumerate() {
             for (f, frame) in layer.iter().enumerate() {
-                resized.push((l, f, crate::tool::resize(frame, width, height)));
+                resized.push((l, f, crate::tool::resize_image(frame, width, height)));
             }
         }
         self.session.history.edit(
-            "resize".into(),
+            "resize image".into(),
             resized,
             None,
             Some(self.session.current_layer),
             Some(self.session.current_frame),
             None,
         );
+        self.write_swap();
+        self.sanitize();
+    }
+    pub fn resize_canvas(&mut self, width: usize, height: usize) {
+        self.clear_temporary();
+        let mut resized = Vec::new();
+        let current = self.session.current_images();
+        for (l, layer) in current.iter().enumerate() {
+            for (f, frame) in layer.iter().enumerate() {
+                resized.push((l, f, crate::tool::resize_canvas(frame, width, height)));
+            }
+        }
+        self.session.history.edit(
+            "resize canvas".into(),
+            resized,
+            None,
+            Some(self.session.current_layer),
+            Some(self.session.current_frame),
+            None,
+        );
+        self.write_swap();
+        self.sanitize();
+    }
+    pub fn scale2x(&mut self) {
+        let mut resized = Vec::new();
+        let current = self.session.current_images();
+        for (l, layer) in current.iter().enumerate() {
+            for (f, frame) in layer.iter().enumerate() {
+                resized.push((l, f, crate::tool::scale2x(frame)));
+            }
+        }
+        self.session.history.edit(
+            "scale2x".into(),
+            resized,
+            None,
+            Some(self.session.current_layer),
+            Some(self.session.current_frame),
+            None,
+        );
+        self.write_swap();
+        self.sanitize();
+    }
+    pub fn scale3x(&mut self) {
+        let mut resized = Vec::new();
+        let current = self.session.current_images();
+        for (l, layer) in current.iter().enumerate() {
+            for (f, frame) in layer.iter().enumerate() {
+                resized.push((l, f, crate::tool::scale3x(frame)));
+            }
+        }
+        self.session.history.edit(
+            "scale3x".into(),
+            resized,
+            None,
+            Some(self.session.current_layer),
+            Some(self.session.current_frame),
+            None,
+        );
+        self.write_swap();
+        self.sanitize();
+    }
+    pub fn rotate(&mut self, angle: f32) {
+        let mut rotated = Vec::new();
+        let current = self.session.current_images();
+        for (l, layer) in current.iter().enumerate() {
+            for (f, frame) in layer.iter().enumerate() {
+                rotated.push((l, f, crate::tool::rotate_angle(frame, angle, None)));
+            }
+        }
+        self.session.history.edit(
+            "rotate".into(),
+            rotated,
+            None,
+            Some(self.session.current_layer),
+            Some(self.session.current_frame),
+            None,
+        );
+        self.write_swap();
         self.sanitize();
     }
     pub fn crop(&mut self, width: usize, height: usize, offset: (i32, i32)) {
@@ -853,6 +930,7 @@ impl Buffer {
                     Some(self.session.current_frame),
                     None,
                 );
+                self.write_swap();
                 self.sanitize();
             }
         }
@@ -894,7 +972,7 @@ impl Buffer {
             viewport,
             fit: true,
             scale: 10.,
-            cursor: BufferCursor::default(),
+            cursor: (0, 0),
 
             session,
             temporary_images: HashMap::new(),

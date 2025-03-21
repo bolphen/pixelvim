@@ -251,13 +251,16 @@ impl LuaInstance {
         self.lua.globals().set("MODIFIER", table)?;
         Ok(())
     }
-    pub fn init(&self, buffer: &Buffer) -> Result<(), Error> {
+    pub fn init(&self, buffer: &Buffer, color: Color) -> Result<(), Error> {
         let snapshot: BufferSnapshot = buffer.into();
         let current_layer = snapshot.current_layer;
         let current_frame = snapshot.current_frame;
         self.lua
             .globals()
             .set("INPUT", snapshot.into_lua(&self.lua)?)?;
+        self.lua
+            .globals()
+            .set("COLOR", color.into_lua(&self.lua)?)?;
         self.lua.globals().set(
             "OUTPUT",
             OutputData {

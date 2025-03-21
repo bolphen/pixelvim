@@ -15,6 +15,7 @@ pub(super) struct RTexture {
 }
 
 const VERTEX: &str = include_str!("default.vert");
+const UI_VERTEX: &str = include_str!("ui.vert");
 const TEX_FRAGMENT: &str = include_str!("texture.frag");
 const BLEND_FRAGMENT: &str = include_str!("blend.frag");
 const UI_FRAGMENT: &str = include_str!("ui.frag");
@@ -34,6 +35,7 @@ pub(super) struct GraphicsInternal {
     selection_pipeline: Pipeline,
     vertex_buffer: BufferId,
     index_buffer: BufferId,
+    ui_vertex_buffer: BufferId,
     ui_bindings: Bindings,
     checker_bindings: Bindings,
     srgb: bool,
@@ -48,6 +50,21 @@ fn tex_vertices(x: f32, y: f32, w: f32, h: f32, tw: f32, th: f32) -> [f32; 20] {
         -1.0 + x/w * 2.,      -1.0 + (y-th)/h * 2., 0.0,     0., 1.,
     ]
 }
+fn default_blend() -> PipelineParams {
+    PipelineParams {
+        color_blend: Some(BlendState::new(
+            Equation::Add,
+            BlendFactor::Value(BlendValue::SourceAlpha),
+            BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+        )),
+        alpha_blend: Some(BlendState::new(
+            Equation::Add,
+            BlendFactor::One,
+            BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+        )),
+        ..Default::default()
+    }
+}
 fn build_pipeline(ctx: &mut Box<dyn RenderingBackend>, shader: ShaderId) -> Pipeline {
     ctx.new_pipeline(
         &[BufferLayout {
@@ -59,39 +76,23 @@ fn build_pipeline(ctx: &mut Box<dyn RenderingBackend>, shader: ShaderId) -> Pipe
             VertexAttribute::new("in_uv", VertexFormat::Float2),
         ],
         shader,
-        PipelineParams {
-            color_blend: Some(BlendState::new(
-                Equation::Add,
-                BlendFactor::Value(BlendValue::SourceAlpha),
-                BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
-            )),
-            alpha_blend: Some(BlendState::new(
-                Equation::Add,
-                BlendFactor::One,
-                BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
-            )),
-            ..Default::default()
-        },
+        default_blend(),
     )
 }
 impl GraphicsInternal {
     pub(super) fn new() -> Self {
         let mut ctx: Box<dyn RenderingBackend> = window::new_rendering_backend();
-        let mut decoder = png::Decoder::new(&include_bytes!("../../assets/font.png")[..]);
-        decoder.set_transformations(png::Transformations::ALPHA);
-        let mut reader = decoder.read_info().unwrap();
-        let info = reader.info().clone();
-        let mut buf = vec![0; reader.output_buffer_size()];
-        reader.next_frame(&mut buf).unwrap();
+        let font_img = crate::format::load_png(&include_bytes!("../../assets/font.png")[..])
+            .expect("Unable to load font");
+        let font_size = ((font_img.width() / 16) as _, (font_img.height() / 16) as _);
         let font = ctx.new_texture_from_data_and_format(
-            &buf,
+            font_img.raw_data(),
             TextureParams {
-                width: info.width as _,
-                height: info.height as _,
+                width: font_img.width() as _,
+                height: font_img.height() as _,
                 ..Default::default()
             },
         );
-        let font_size = ((info.width / 16) as f32, (info.height / 16) as f32);
         ctx.texture_set_filter(font, FilterMode::Nearest, miniquad::MipmapFilterMode::None);
         let tex_shader = ctx
             .new_shader(
@@ -122,17 +123,12 @@ impl GraphicsInternal {
         let ui_shader = ctx
             .new_shader(
                 ShaderSource::Glsl {
-                    vertex: VERTEX,
+                    vertex: UI_VERTEX,
                     fragment: UI_FRAGMENT,
                 },
                 ShaderMeta {
                     images: vec!["texture".into()],
-                    uniforms: UniformBlockLayout {
-                        uniforms: vec![
-                            UniformDesc::new("fg", UniformType::Float4),
-                            UniformDesc::new("bg", UniformType::Float4),
-                        ],
-                    },
+                    uniforms: UniformBlockLayout { uniforms: vec![] },
                 },
             )
             .unwrap();
@@ -192,7 +188,22 @@ impl GraphicsInternal {
             )
             .unwrap();
         let tex_pipeline = build_pipeline(&mut ctx, tex_shader);
-        let ui_pipeline = build_pipeline(&mut ctx, ui_shader);
+        let ui_pipeline = ctx.new_pipeline(
+            &[BufferLayout {
+                stride: VertexFormat::Float3.size_bytes()
+                    + VertexFormat::Float2.size_bytes()
+                    + VertexFormat::Float4.size_bytes() * 2,
+                ..Default::default()
+            }],
+            &[
+                VertexAttribute::new("in_pos", VertexFormat::Float3),
+                VertexAttribute::new("in_uv", VertexFormat::Float2),
+                VertexAttribute::new("in_fg", VertexFormat::Float4),
+                VertexAttribute::new("in_bg", VertexFormat::Float4),
+            ],
+            ui_shader,
+            default_blend(),
+        );
         let checker_pipeline = build_pipeline(&mut ctx, checker_shader);
         let grid_pipeline = build_pipeline(&mut ctx, grid_shader);
         let selection_pipeline = build_pipeline(&mut ctx, selection_shader);
@@ -258,9 +269,23 @@ impl GraphicsInternal {
             BufferUsage::Immutable,
             BufferSource::slice(indices),
         );
+        let ui_vertices: &[f32] = &[0.; 52 * 128];
+        let ui_vertex_buffer = ctx.new_buffer(
+            BufferType::VertexBuffer,
+            BufferUsage::Immutable,
+            BufferSource::slice(ui_vertices),
+        );
+        let ui_indices: &[u16] = &(0..128)
+            .flat_map(|i| vec![4 * i, 4 * i + 1, 4 * i + 2, 4 * i, 4 * i + 2, 4 * i + 3])
+            .collect::<Vec<u16>>();
+        let ui_index_buffer = ctx.new_buffer(
+            BufferType::IndexBuffer,
+            BufferUsage::Immutable,
+            BufferSource::slice(ui_indices),
+        );
         let ui_bindings = Bindings {
-            vertex_buffers: vec![vertex_buffer],
-            index_buffer,
+            vertex_buffers: vec![ui_vertex_buffer],
+            index_buffer: ui_index_buffer,
             images: vec![font],
         };
         let checker_bindings = Bindings {
@@ -279,6 +304,7 @@ impl GraphicsInternal {
             grid_pipeline,
             vertex_buffer,
             index_buffer,
+            ui_vertex_buffer,
             ui_bindings,
             checker_bindings,
             selection_pipeline,
@@ -316,6 +342,26 @@ impl GraphicsInternal {
         };
         let id = self.ctx.new_texture_from_data_and_format(
             &[255, 255, 255, 255],
+            TextureParams {
+                width: 1,
+                height: 1,
+                format,
+                ..Default::default()
+            },
+        );
+        self.ctx
+            .texture_set_filter(id, FilterMode::Nearest, miniquad::MipmapFilterMode::None);
+        let bindings = Bindings {
+            vertex_buffers: vec![self.vertex_buffer],
+            index_buffer: self.index_buffer,
+            images: vec![id],
+        };
+        Texture { id, bindings }
+    }
+    pub(super) fn new_tex_1(&mut self) -> Texture {
+        let format = TextureFormat::Alpha;
+        let id = self.ctx.new_texture_from_data_and_format(
+            &[255],
             TextureParams {
                 width: 1,
                 height: 1,
@@ -380,44 +426,57 @@ impl GraphicsInternal {
             self.ctx.texture_resize(id, width, height, data);
         }
     }
-    pub(super) fn draw_index(&mut self, index: u32, rect: Rect, fg: Color, bg: Color) {
+    pub(super) fn index_to_vertices(
+        &self,
+        index: u32,
+        rect: Rect<f32>,
+        fg: Color,
+        bg: Color,
+    ) -> Vec<f32> {
         let (x, y, tw, th) = rect.get();
         let (w, h) = Graphics::screen_size();
         let y = h - y;
         let (i, j) = ((index % 16) as f32 / 16., (index / 16) as f32 / 16.);
+        let fg = fg.to_linear(self.srgb);
+        let bg = bg.to_linear(self.srgb);
         #[rustfmt::skip]
-        let vertices: &[f32] = &[
-            /* pos                                               uvs */
-            -1.0 + x/w * 2.,      -1.0 + y/h * 2.,      0.0,     i,          j,
-            -1.0 + (x+tw)/w * 2., -1.0 + y/h * 2.,      0.0,     i + 0.0625, j,
-            -1.0 + (x+tw)/w * 2., -1.0 + (y-th)/h * 2., 0.0,     i + 0.0625, j + 0.0625,
-            -1.0 + x/w * 2.,      -1.0 + (y-th)/h * 2., 0.0,     i,          j + 0.0625,
+        let vertices = vec![
+            /* pos                                           uvs */
+            -1.0 + x/w * 2.,      -1.0 + y/h * 2.,      0.0, i,          j,          fg[0], fg[1], fg[2], fg[3], bg[0], bg[1], bg[2], bg[3],
+            -1.0 + (x+tw)/w * 2., -1.0 + y/h * 2.,      0.0, i + 0.0625, j,          fg[0], fg[1], fg[2], fg[3], bg[0], bg[1], bg[2], bg[3],
+            -1.0 + (x+tw)/w * 2., -1.0 + (y-th)/h * 2., 0.0, i + 0.0625, j + 0.0625, fg[0], fg[1], fg[2], fg[3], bg[0], bg[1], bg[2], bg[3],
+            -1.0 + x/w * 2.,      -1.0 + (y-th)/h * 2., 0.0, i,          j + 0.0625, fg[0], fg[1], fg[2], fg[3], bg[0], bg[1], bg[2], bg[3],
         ];
-        self.ctx
-            .buffer_update(self.vertex_buffer, BufferSource::slice(vertices));
+        vertices
+    }
+    pub(super) fn draw_console_vertices(&mut self, vertices: &[f32], count: usize) {
+        self.ctx.buffer_update(
+            self.ui_vertex_buffer,
+            BufferSource::slice(&vertices[0..52 * count]),
+        );
         self.ctx.begin_pass(None, PassAction::Nothing);
         self.ctx.apply_pipeline(&self.ui_pipeline);
         self.ctx.apply_bindings(&self.ui_bindings);
-        let mut d: Vec<f32> = Vec::new();
-        d.extend(fg.to_linear(self.srgb));
-        d.extend(bg.to_linear(self.srgb));
-        let t: [f32; 8] = d[..].try_into().expect("");
-        self.ctx.apply_uniforms(UniformsSource::table(&t));
-        self.ctx.draw(0, 6, 1);
+        self.ctx.draw(0, 6 * count as i32, 1);
         self.ctx.end_render_pass();
     }
-    pub(super) fn draw_tex_to_screen(&mut self, tex: &Texture, rect: Rect, color: Option<Color>) {
+    pub(super) fn draw_tex_to_screen(
+        &mut self,
+        tex: &Texture,
+        rect: Rect<f32>,
+        color: Option<Color>,
+    ) {
         self._draw_to_screen(&tex.bindings, rect, color)
     }
     pub(super) fn draw_rtex_to_screen(
         &mut self,
         rtex: &RTexture,
-        rect: Rect,
+        rect: Rect<f32>,
         color: Option<Color>,
     ) {
         self._draw_to_screen(&rtex.bindings, rect, color)
     }
-    fn _draw_to_screen(&mut self, bindings: &Bindings, rect: Rect, color: Option<Color>) {
+    fn _draw_to_screen(&mut self, bindings: &Bindings, rect: Rect<f32>, color: Option<Color>) {
         let (x, y, tw, th) = rect.get();
         let (w, h) = Graphics::screen_size();
         let y = h - y;
@@ -441,7 +500,7 @@ impl GraphicsInternal {
         );
         self.ctx.end_render_pass();
     }
-    pub(super) fn draw_tex_on_rtex(&mut self, base: TextureId, tex: &Texture, rtex: &RTexture) {
+    pub(super) fn blend_tex_on_rtex(&mut self, base: TextureId, tex: &Texture, rtex: &RTexture) {
         let vertices = tex_vertices(0., 0., 1., -1., 1., 1.);
         self.ctx
             .buffer_update(self.vertex_buffer, BufferSource::slice(&vertices));
@@ -476,7 +535,7 @@ impl GraphicsInternal {
     }
     pub(super) fn draw_checker(
         &mut self,
-        rect: Rect,
+        rect: Rect<f32>,
         offset: (f32, f32),
         color1: Color,
         color2: Color,
@@ -499,7 +558,7 @@ impl GraphicsInternal {
         self.ctx.draw(0, 6, 1);
         self.ctx.end_render_pass();
     }
-    pub(super) fn draw_grid(&mut self, rect: Rect, color: Color, size: (f32, f32)) {
+    pub(super) fn draw_grid(&mut self, rect: Rect<f32>, color: Color, size: (f32, f32)) {
         let (x, y, tw, th) = rect.get();
         let (w, h) = Graphics::screen_size();
         let y = h - y;
@@ -517,7 +576,13 @@ impl GraphicsInternal {
         self.ctx.draw(0, 6, 1);
         self.ctx.end_render_pass();
     }
-    pub(super) fn draw_selection(&mut self, tex: &Texture, rect: Rect, color: Color, time: f32) {
+    pub(super) fn draw_selection(
+        &mut self,
+        tex: &Texture,
+        rect: Rect<f32>,
+        color: Color,
+        time: f32,
+    ) {
         let (x, y, tw, th) = rect.get();
         let (w, h) = Graphics::screen_size();
         let y = h - y;

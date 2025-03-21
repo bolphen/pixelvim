@@ -20,9 +20,6 @@ pub const CP437: [u16; 256] = [
 ];
 pub type Console = crate::grid::Grid<(u32, Color, Color)>;
 impl Console {
-    pub fn new(width: usize, height: usize) -> Self {
-        Console::new_with(width, height, (0, (0, 0, 0).into(), (0, 0, 0).into()))
-    }
     pub fn clear(&mut self, default: Option<(u32, Color, Color)>) {
         self.clear_with(default.unwrap_or((0, (0, 0, 0).into(), (0, 0, 0).into())));
     }

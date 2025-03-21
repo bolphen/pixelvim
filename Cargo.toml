@@ -1,7 +1,7 @@
 [package]
 name = "pixelvim"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 
 [features]
 default = ["lua"]
@@ -13,9 +13,9 @@ nanoserde = { path = "nanoserde", default-features = false, features = ["std", "
 color_quant = "*"
 png = "*"
 gif = "*"
+ase = { path = "ase" }
 pico-args = "*"
-snap = "*"
-asefile = "*"
+flate2 = "1.0"
 dirs = "*"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -33,3 +33,7 @@ lto = true          # Enable link-time optimization
 codegen-units = 1   # Reduce number of codegen units to increase optimizations
 panic = 'abort'     # Abort on panic
 strip = true        # Strip symbols from binary*
+
+[profile.release-web]
+inherits = "release"
+opt-level = 'z'

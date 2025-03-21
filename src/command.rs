@@ -42,6 +42,8 @@ pub enum Setting {
     BrushShape(String),
     FloodTolerance(Int),
     AnimationSpeed(Float),
+    PaletteRow(Int),
+    PaletteLeft(Int),
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +60,8 @@ pub enum Toggleable {
     AnimationStrip,
     AnimationEditAll,
     Tile,
+    CursorSystem,
+    SoftwareRender,
     Debug,
 }
 
@@ -136,27 +140,27 @@ impl Settings {
 
 impl Default for Settings {
     fn default() -> Self {
+        use crate::command::Toggleable;
+        use Setting::*;
         Settings {
             settings: HashMap::new(),
         }
-        .setting("color", "Set main color", |value| {
-            Ok(Setting::Color(value.parse()?))
-        })
+        .setting("color", "Set main color", |value| Ok(Color(value.parse()?)))
         .setting("background", "Set background color", |value| {
-            Ok(Setting::Background(value.parse()?))
+            Ok(Background(value.parse()?))
         })
         .setting("visual/color", "Set visual mode color", |value| {
-            Ok(Setting::VisualColor(value.parse()?))
+            Ok(VisualColor(value.parse()?))
         })
         .setting("visual/alpha", "Set visual mode alpha", |value| {
-            Ok(Setting::VisualAlpha(value.parse()?))
+            Ok(VisualAlpha(value.parse()?))
         })
         .setting("scale/ui", "Set UI scale", |value| {
             let scale: Float = value.parse()?;
-            if scale.0 >= 1. && scale.0 <= 5. {
-                Ok(Setting::Scale(scale))
+            if scale.0 >= 0.5 && scale.0 <= 5. {
+                Ok(Scale(scale))
             } else {
-                Err("Not in the range 1..5")?
+                Err("Not in the range 0.5..5")?
             }
         })
         .onoff_setting("fullscreen", "Toggle fullscreen", Toggleable::Fullscreen)
@@ -176,29 +180,29 @@ impl Default for Settings {
         .setting(
             "x-sym/offset",
             "Buffer set symmetry offset in X-axis",
-            |value| Ok(Setting::XSymOffset(value.parse()?)),
+            |value| Ok(XSymOffset(value.parse()?)),
         )
         .setting(
             "y-sym/offset",
             "Buffer set symmetry offset in Y-axis",
-            |value| Ok(Setting::YSymOffset(value.parse()?)),
+            |value| Ok(YSymOffset(value.parse()?)),
         )
         .onoff_setting("grid", "Buffer toggle grid", Toggleable::Grid)
         .setting("grid/size", "Buffer set grid size", |value| {
-            Ok(Setting::GridSize(value.parse()?))
+            Ok(GridSize(value.parse()?))
         })
         .setting("grid/color", "Buffer set grid color", |value| {
-            Ok(Setting::GridColor(value.parse()?))
+            Ok(GridColor(value.parse()?))
         })
         .onoff_setting("srgb", "SRGB color profile", Toggleable::Srgb)
         .setting("brush/size", "Brush size", |value| {
-            Ok(Setting::BrushSize(value.parse()?))
+            Ok(BrushSize(value.parse()?))
         })
         .setting("brush/shape", "Brush shape", |value| {
-            Ok(Setting::BrushShape(value.into()))
+            Ok(BrushShape(value.into()))
         })
         .setting("flood/tolerance", "Flood tolerance", |value| {
-            Ok(Setting::FloodTolerance(value.parse()?))
+            Ok(FloodTolerance(value.parse()?))
         })
         .onoff_setting("animation", "Buffer animation", Toggleable::Animation)
         .onoff_setting(
@@ -207,7 +211,7 @@ impl Default for Settings {
             Toggleable::AnimationEditAll,
         )
         .setting("animation/speed", "Buffer animation speed", |value| {
-            Ok(Setting::AnimationSpeed(value.parse()?))
+            Ok(AnimationSpeed(value.parse()?))
         })
         .onoff_setting(
             "animation/strip",
@@ -215,7 +219,28 @@ impl Default for Settings {
             Toggleable::AnimationStrip,
         )
         .onoff_setting("tile", "Display in tile mode", Toggleable::Tile)
-        .onoff_setting("debug", "Memory usage", Toggleable::Debug)
+        .onoff_setting(
+            "render/software",
+            "Use software rendering",
+            Toggleable::SoftwareRender,
+        )
+        .onoff_setting(
+            "cursor/system",
+            "Use system cursor",
+            Toggleable::CursorSystem,
+        )
+        .onoff_setting("debug", "Show memory usage", Toggleable::Debug)
+        .setting("palette/row", "Number of colors per row", |value| {
+            let value: Int = value.parse()?;
+            if value.0 > 0 {
+                Ok(PaletteRow(value))
+            } else {
+                Err("Invalid value")?
+            }
+        })
+        .setting("palette/left", "Margin to the left", |value| {
+            Ok(PaletteLeft(value.parse()?))
+        })
     }
 }
 
@@ -306,11 +331,17 @@ pub enum Command {
     Write { path: Option<PathBuf>, forced: bool },
     PrintWorkingDir,
     ChangeDir(PathBuf),
-    Resize(Size),
+    ResizeImage(Size),
+    ResizeCanvas(Size),
+    Scale2x,
+    Scale3x,
+    Rotate(Float),
     // setting parsing are delayed
     Set(String),
     Toggle(String),
     Fit,
+    ZoomIn(Int),
+    ZoomOut(Int),
     Map(KeyMapEntry),
     MapNormal(KeyMapEntry),
     MapVisual(KeyMapEntry),
@@ -322,6 +353,9 @@ pub enum Command {
     Quantize(Int),
     FlipHorizontal,
     FlipVertical,
+    BrushSize(Int),
+    BrushSizeIncrease(Int),
+    BrushSizeDecrease(Int),
     LayerGoAbove(Int),
     LayerGoBelow(Int),
     LayerNewAbove(Int),
@@ -335,10 +369,12 @@ pub enum Command {
     FrameNewRight(Int),
     FrameDuplicate(Int),
     FrameDelete,
-    Slice(Int),
+    FrameSlice(Int),
+    FrameUnslice,
     SelectAll,
     SelectInvert,
     SelectClear,
+    SelectGrid,
     PaletteAdd(Option<Color>), // None means current color
     PaletteDelete(ColorOrIndex),
     PaletteClear,
@@ -354,44 +390,41 @@ pub enum Command {
 }
 impl Command {
     pub fn modify(self, modifier: Option<Modifier>) -> Self {
+        use Command::*;
         match self {
-            Self::Undo(..) => Self::Undo(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
-            Self::Redo(..) => Self::Redo(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
-            Self::LayerGoAbove(..) => {
-                Self::LayerGoAbove(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
+            Undo(..) => Undo(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            Redo(..) => Redo(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            ZoomIn(..) => ZoomIn(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            ZoomOut(..) => ZoomOut(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            BrushSizeIncrease(..) => {
+                BrushSizeIncrease(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
             }
-            Self::LayerGoBelow(..) => {
-                Self::LayerGoBelow(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
+            BrushSizeDecrease(..) => {
+                BrushSizeDecrease(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
             }
-            Self::FrameGoLeft(..) => {
-                Self::FrameGoLeft(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
+            LayerGoAbove(..) => LayerGoAbove(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            LayerGoBelow(..) => LayerGoBelow(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            FrameGoLeft(..) => FrameGoLeft(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            FrameGoRight(..) => FrameGoRight(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            LayerNewAbove(..) => {
+                LayerNewAbove(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
             }
-            Self::FrameGoRight(..) => {
-                Self::FrameGoRight(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
+            LayerNewBelow(..) => {
+                LayerNewBelow(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
             }
-            Self::LayerNewAbove(..) => {
-                Self::LayerNewAbove(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
+            LayerMergeDown(..) => {
+                LayerMergeDown(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
             }
-            Self::LayerNewBelow(..) => {
-                Self::LayerNewBelow(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
+            FrameNewLeft(..) => FrameNewLeft(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            FrameNewRight(..) => {
+                FrameNewRight(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
             }
-            Self::LayerMergeDown(..) => {
-                Self::LayerMergeDown(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
+            FrameDuplicate(..) => {
+                FrameDuplicate(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
             }
-            Self::FrameNewLeft(..) => {
-                Self::FrameNewLeft(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
-            }
-            Self::FrameNewRight(..) => {
-                Self::FrameNewRight(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
-            }
-            Self::FrameDuplicate(..) => {
-                Self::FrameDuplicate(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1)))
-            }
-            Self::Slice(..) => Self::Slice(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
-            Self::Quantize(..) => {
-                Self::Quantize(Int(modifier.and_then(Modifier::to_i32).unwrap_or(32)))
-            }
-            Self::RunScript(path, ..) => Self::RunScript(path, modifier),
+            FrameSlice(..) => FrameSlice(Int(modifier.and_then(Modifier::to_i32).unwrap_or(1))),
+            Quantize(..) => Quantize(Int(modifier.and_then(Modifier::to_i32).unwrap_or(32))),
+            RunScript(path, ..) => RunScript(path, modifier),
             _ => self,
         }
     }
@@ -503,210 +536,200 @@ fn escape_path(path: &str) -> PathBuf {
 
 impl Default for Commands {
     fn default() -> Self {
+        use Command::*;
         Commands {
             commands: HashMap::new(),
         }
-        .command("q", "Close current buffer", |_, forced| {
-            Ok(Command::Quit { forced })
-        })
+        .command("q", "Close current buffer", |_, forced| Ok(Quit { forced }))
         .command("quit", "Close current buffer", |_, forced| {
-            Ok(Command::Quit { forced })
+            Ok(Quit { forced })
         })
         .command("qall", "Close all buffers and quit", |_, forced| {
-            Ok(Command::QuitAll { forced })
+            Ok(QuitAll { forced })
         })
         .command("new", "Create new image", |args, _| {
-            Ok(Command::New(none_if_empty(args)?))
+            Ok(New(none_if_empty(args)?))
         })
-        .command("help", "Show help", |_, _| Ok(Command::Help))
+        .command("help", "Show help", |_, _| Ok(Help))
         .command("buffer", "Switch to buffer", |args, _| {
-            Ok(Command::Buffer(args.into()))
+            Ok(Buffer(args.into()))
         })
         .command("edit", "Open image from disk", |args, _| {
             (!args.is_empty())
-                .then(|| Command::Edit(escape_path(args)))
+                .then(|| Edit(escape_path(args)))
                 .ok_or("No file name".into())
         })
         .command("source", "Load config file from disk", |args, _| {
             (!args.is_empty())
-                .then(|| Command::Source(escape_path(args)))
+                .then(|| Source(escape_path(args)))
                 .ok_or("No file name".into())
         })
         .command("run", "Run lua script from disk", |args, _| {
             (!args.is_empty())
-                .then(|| Command::RunScript(escape_path(args), None))
+                .then(|| RunScript(escape_path(args), None))
                 .ok_or("No file name".into())
         })
         .command("write", "Save image to disk", |args, forced| {
-            let path = (!args.is_empty()).then_some(args.into());
-            Ok(Command::Write { path, forced })
+            let path = (!args.is_empty()).then_some(escape_path(args));
+            Ok(Write { path, forced })
         })
-        .command("pwd", "Print working directory", |_, _| {
-            Ok(Command::PrintWorkingDir)
-        })
+        .command("pwd", "Print working directory", |_, _| Ok(PrintWorkingDir))
         .command("cd", "Change working directory", |args, _| {
             if args.is_empty() {
-                Ok(Command::ChangeDir(escape_path("~")))
+                Ok(ChangeDir(escape_path("~")))
             } else {
-                Ok(Command::ChangeDir(escape_path(args)))
+                Ok(ChangeDir(escape_path(args)))
             }
         })
-        .command("resize", "Resize image", |args, _| {
-            Ok(Command::Resize(args.parse()?))
+        .command("resize/image", "Resize image", |args, _| {
+            Ok(ResizeImage(args.parse()?))
         })
-        .command("fit", "Fit image to view", |_, _| Ok(Command::Fit))
+        .command("resize/canvas", "Resize canvas", |args, _| {
+            Ok(ResizeCanvas(args.parse()?))
+        })
+        .command("scale2x", "Scale2x image", |_, _| Ok(Scale2x))
+        .command("scale3x", "Scale3x image", |_, _| Ok(Scale3x))
+        .command("rotate", "Rotate image", |args, _| {
+            Ok(Rotate(args.parse()?))
+        })
+        .command("fit", "Fit image to view", |_, _| Ok(Fit))
+        .command("zoom/in", "Zoom in", |args, _| {
+            Ok(ZoomIn(none_if_empty(args)?.unwrap_or(Int(1))))
+        })
+        .command("zoom/out", "Zoom out", |args, _| {
+            Ok(ZoomOut(none_if_empty(args)?.unwrap_or(Int(1))))
+        })
         .command("set", "Change setting (to on)", |args, _| {
-            Ok(Command::Set(args.into()))
+            Ok(Set(args.into()))
         })
         .command("unset", "Change setting to off", |args, _| {
-            Ok(Command::Set(format!("{args}=false")))
+            Ok(Set(format!("{args}=false")))
         })
         .command("toggle", "Toggle setting", |args, _| {
-            Ok(Command::Toggle(args.into()))
+            Ok(Toggle(args.into()))
         })
         .command("map", "Map key to actions", |args, _| {
-            Ok(Command::Map(args.parse()?))
+            Ok(Map(args.parse()?))
         })
         .command(
             "map/normal",
             "Map key to actions in normal mode",
-            |args, _| Ok(Command::MapNormal(args.parse()?)),
+            |args, _| Ok(MapNormal(args.parse()?)),
         )
         .command(
             "map/visual",
             "Map key to actions in visual mode",
-            |args, _| Ok(Command::MapVisual(args.parse()?)),
+            |args, _| Ok(MapVisual(args.parse()?)),
         )
         .command("undo", "Undo", |args, _| {
-            Ok(Command::Undo(none_if_empty(args)?.unwrap_or(Int(1))))
+            Ok(Undo(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command("redo", "Redo", |args, _| {
-            Ok(Command::Redo(none_if_empty(args)?.unwrap_or(Int(1))))
+            Ok(Redo(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command("flip/horizontal", "Flip horizontally", |_, _| {
-            Ok(Command::FlipHorizontal)
+            Ok(FlipHorizontal)
         })
-        .command("flip/vertical", "Flip vertically", |_, _| {
-            Ok(Command::FlipVertical)
-        })
-        .command("crop", "Crop", |_, _| Ok(Command::Crop))
+        .command("flip/vertical", "Flip vertically", |_, _| Ok(FlipVertical))
+        .command("crop", "Crop", |_, _| Ok(Crop))
         .command(
             "reduce",
             "Reduce using only colors from the palette",
-            |_, _| Ok(Command::Reduce),
+            |_, _| Ok(Reduce),
         )
         .command(
             "quantize",
             "Reduce the number of colors using the NeuQuant algorithm",
-            |args, _| Ok(Command::Quantize(none_if_empty(args)?.unwrap_or(Int(32)))),
+            |args, _| Ok(Quantize(none_if_empty(args)?.unwrap_or(Int(32)))),
         )
+        .command("brush/size", "Set brush size", |args, _| {
+            Ok(BrushSize(args.parse()?))
+        })
+        .command("brush/size/increase", "Increase brush size", |args, _| {
+            Ok(BrushSizeIncrease(none_if_empty(args)?.unwrap_or(Int(1))))
+        })
+        .command("brush/size/decrease", "Decrease brush size", |args, _| {
+            Ok(BrushSizeDecrease(none_if_empty(args)?.unwrap_or(Int(1))))
+        })
         .command("layer/go/above", "Go to layer above", |args, _| {
-            Ok(Command::LayerGoAbove(
-                none_if_empty(args)?.unwrap_or(Int(1)),
-            ))
+            Ok(LayerGoAbove(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command("layer/go/below", "Go to layer below", |args, _| {
-            Ok(Command::LayerGoBelow(
-                none_if_empty(args)?.unwrap_or(Int(1)),
-            ))
+            Ok(LayerGoBelow(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command("layer/new/above", "Create new layer above", |args, _| {
-            Ok(Command::LayerNewAbove(
-                none_if_empty(args)?.unwrap_or(Int(1)),
-            ))
+            Ok(LayerNewAbove(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command("layer/new/below", "Create new layer below", |args, _| {
-            Ok(Command::LayerNewBelow(
-                none_if_empty(args)?.unwrap_or(Int(1)),
-            ))
+            Ok(LayerNewBelow(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command(
             "layer/merge/down",
             "Merge with the layer below",
-            |args, _| {
-                Ok(Command::LayerMergeDown(
-                    none_if_empty(args)?.unwrap_or(Int(1)),
-                ))
-            },
+            |args, _| Ok(LayerMergeDown(none_if_empty(args)?.unwrap_or(Int(1)))),
         )
         .command("layer/delete", "Delete current layer", |_, _| {
-            Ok(Command::LayerDelete)
+            Ok(LayerDelete)
         })
         .command("layer/toggle", "Toggle current layer visibility", |_, _| {
-            Ok(Command::LayerToggle)
+            Ok(LayerToggle)
         })
         .command("frame/go/left", "Go to frame on the left", |args, _| {
-            Ok(Command::FrameGoLeft(none_if_empty(args)?.unwrap_or(Int(1))))
+            Ok(FrameGoLeft(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command("frame/go/right", "Go to frame on the right", |args, _| {
-            Ok(Command::FrameGoRight(
-                none_if_empty(args)?.unwrap_or(Int(1)),
-            ))
+            Ok(FrameGoRight(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command(
             "frame/new/left",
             "Insert new frame on the left",
-            |args, _| {
-                Ok(Command::FrameNewLeft(
-                    none_if_empty(args)?.unwrap_or(Int(1)),
-                ))
-            },
+            |args, _| Ok(FrameNewLeft(none_if_empty(args)?.unwrap_or(Int(1)))),
         )
         .command(
             "frame/new/right",
             "Insert new frame on the right",
-            |args, _| {
-                Ok(Command::FrameNewRight(
-                    none_if_empty(args)?.unwrap_or(Int(1)),
-                ))
-            },
+            |args, _| Ok(FrameNewRight(none_if_empty(args)?.unwrap_or(Int(1)))),
         )
         .command("frame/duplicate", "Duplicate current frame", |args, _| {
-            Ok(Command::FrameDuplicate(
-                none_if_empty(args)?.unwrap_or(Int(1)),
-            ))
+            Ok(FrameDuplicate(none_if_empty(args)?.unwrap_or(Int(1))))
         })
         .command("frame/delete", "Delete current frame", |_, _| {
-            Ok(Command::FrameDelete)
+            Ok(FrameDelete)
         })
-        .command("slice", "Slice into frames", |args, _| {
-            Ok(Command::Slice(none_if_empty(args)?.unwrap_or(Int(1))))
+        .command("frame/slice", "Slice into frames", |args, _| {
+            Ok(FrameSlice(none_if_empty(args)?.unwrap_or(Int(1))))
         })
-        .command("select/all", "Select all", |_, _| Ok(Command::SelectAll))
-        .command("select/invert", "Invert selection", |_, _| {
-            Ok(Command::SelectInvert)
+        .command("frame/unslice", "Unslice frames into one", |_, _| {
+            Ok(FrameUnslice)
         })
-        .command("select/clear", "Clear selection", |_, _| {
-            Ok(Command::SelectClear)
-        })
+        .command("select/all", "Select all", |_, _| Ok(SelectAll))
+        .command("select/invert", "Invert selection", |_, _| Ok(SelectInvert))
+        .command("select/clear", "Clear selection", |_, _| Ok(SelectClear))
+        .command("select/grid", "Select current grid", |_, _| Ok(SelectGrid))
         .command("palette/add", "Add color to palette", |args, _| {
-            Ok(Command::PaletteAdd(none_if_empty(args)?))
+            Ok(PaletteAdd(none_if_empty(args)?))
         })
         .command("palette/delete", "Delete color from palette", |args, _| {
-            Ok(Command::PaletteDelete(args.parse()?))
+            Ok(PaletteDelete(args.parse()?))
         })
-        .command("palette/clear", "Clear palette", |_, _| {
-            Ok(Command::PaletteClear)
-        })
-        .command("palette/sort", "Sort palette", |_, _| {
-            Ok(Command::PaletteSort)
-        })
+        .command("palette/clear", "Clear palette", |_, _| Ok(PaletteClear))
+        .command("palette/sort", "Sort palette", |_, _| Ok(PaletteSort))
         .command("palette/build", "Build palette from image", |_, _| {
-            Ok(Command::PaletteBuild)
+            Ok(PaletteBuild)
         })
         .command("palette/gradient", "Add gradient to palette", |args, _| {
             let (c1, rest) = args.split_once(' ').ok_or("Cannot parse command")?;
             let c1 = c1.parse()?;
             let rest = rest.trim_start();
             let (c2, rest) = rest.split_once(' ').ok_or("Cannot parse command")?;
-            Ok(Command::PaletteGradient(c1, c2.parse()?, rest.parse()?))
+            Ok(PaletteGradient(c1, c2.parse()?, rest.parse()?))
         })
-        .command("yank", "Yank", |_, _| Ok(Command::Yank))
-        .command("paste", "Paste", |_, _| Ok(Command::Paste))
-        .command("cut", "Cut", |_, _| Ok(Command::Cut))
-        .command("delete", "Delete", |_, _| Ok(Command::Delete))
+        .command("yank", "Yank", |_, _| Ok(Yank))
+        .command("paste", "Paste", |_, _| Ok(Paste))
+        .command("cut", "Cut selection", |_, _| Ok(Cut))
+        .command("delete", "Delete selection", |_, _| Ok(Delete))
         .command("paste/system", "Paste from system clipboard", |_, _| {
-            Ok(Command::PasteSystem)
+            Ok(PasteSystem)
         })
     }
 }

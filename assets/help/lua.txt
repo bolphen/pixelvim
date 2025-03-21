@@ -5,6 +5,8 @@ VARIABLES
 =========
 The following special variables are used to communicate with pixelvim.
 
+`COLOR`: main tool color, of type `Color` (see below)
+
 `MODIFIER`: contains the current modifier (for now is just a number)
 
     FIELDS

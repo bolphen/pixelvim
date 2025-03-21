@@ -19,7 +19,7 @@ impl Engine {
                     }
                 }
                 if self.buffers.is_empty() {
-                    self.quit_requested = true;
+                    miniquad::window::quit();
                 }
             }
             Command::QuitAll { forced } => {
@@ -38,7 +38,7 @@ impl Engine {
                     }
                 }
                 if self.buffers.is_empty() {
-                    self.quit_requested = true;
+                    miniquad::window::quit();
                 }
             }
             Command::New(size) => {
@@ -103,19 +103,48 @@ impl Engine {
                     self.mode.error("Not a directory");
                 }
             }
-            Command::Resize(size) => {
-                if let Some(buffer) = self.buffers.get_mut(self.current) {
-                    if size != buffer.size() {
-                        buffer.resize(size.0 as _, size.1 as _);
-                        self.mode.message("Used resize");
-                    }
+            Command::ResizeImage(size) => {
+                let buffer = self.active_buffer_mut()?;
+                if size != buffer.size() {
+                    buffer.resize_image(size.0 as _, size.1 as _);
+                    self.mode.reset(Some(Message::normal("Used resize image")));
                 }
+            }
+            Command::ResizeCanvas(size) => {
+                let buffer = self.active_buffer_mut()?;
+                if size != buffer.size() {
+                    buffer.resize_canvas(size.0 as _, size.1 as _);
+                    self.mode.reset(Some(Message::normal("Used resize canvas")));
+                }
+            }
+            Command::Scale2x => {
+                let buffer = self.active_buffer_mut()?;
+                buffer.scale2x();
+                self.mode.reset(Some(Message::normal("Used scale2x")));
+            }
+            Command::Scale3x => {
+                let buffer = self.active_buffer_mut()?;
+                buffer.scale3x();
+                self.mode.reset(Some(Message::normal("Used scale3x")));
+            }
+            Command::Rotate(angle) => {
+                let buffer = self.active_buffer_mut()?;
+                buffer.rotate(angle.0);
+                self.mode.reset(Some(Message::normal("Used rotate")));
             }
             Command::Fit => {
                 let screen = self.screen;
                 let buffer = self.active_buffer_mut()?;
                 buffer.fit_to_view(screen);
                 self.mode.message("Fit image to view");
+            }
+            Command::ZoomIn(value) => {
+                let buffer = self.active_buffer_mut()?;
+                buffer.zoom_at(1.25_f32.powi(value.0), None);
+            }
+            Command::ZoomOut(value) => {
+                let buffer = self.active_buffer_mut()?;
+                buffer.zoom_at(0.8_f32.powi(value.0), None);
             }
             Command::Set(expr) => match self.settings.parse(&expr)? {
                 Setting::Color(color) => {
@@ -161,6 +190,9 @@ impl Engine {
                 Setting::Toggleable(Toggleable::Picker, value) => {
                     self.picker = value.0;
                     self.mode.message(&format!("  picker={}", self.picker));
+                    if self.picker {
+                        self.active_buffer_mut().ok().map(|b| b.clear_temporary());
+                    }
                 }
                 Setting::Toggleable(Toggleable::Checker, value) => {
                     self.checker = value.0;
@@ -207,15 +239,23 @@ impl Engine {
                     self.toggle_srgb(Some(value.0));
                     self.mode.message(&format!("  srgb={}", self.srgb));
                 }
+                Setting::Toggleable(Toggleable::CursorSystem, value) => {
+                    self.system_cursor = value.0;
+                    self.mode
+                        .message(&format!("  cursor/system={}", self.system_cursor));
+                }
+                Setting::Toggleable(Toggleable::SoftwareRender, value) => {
+                    self.software_render = value.0;
+                    self.mode
+                        .message(&format!("  render/software={}", self.software_render));
+                }
                 Setting::Toggleable(Toggleable::Debug, value) => {
                     self.debug = value.0;
                     self.mode.message(&format!("  debug={}", self.debug));
                 }
-                Setting::BrushSize(size) => match &mut self.tool_setting.brush {
-                    Brush::Rect(s) => *s = size.0.clamp(1, 255) as _,
-                    Brush::Round(s) => *s = size.0.clamp(1, 255) as _,
-                    _ => (),
-                },
+                Setting::BrushSize(size) => {
+                    self.tool_setting.brush.set_size(size.0.clamp(1, 255) as _)
+                }
                 Setting::BrushShape(shape) => {
                     let selection = self.active_buffer_mut().ok().and_then(|b| {
                         Register::new(b.image(), b.selection()).map(|r| {
@@ -255,6 +295,12 @@ impl Engine {
                     self.display.set_tile(value.0);
                     self.mode.message(&format!("  tile={}", value.0));
                 }
+                Setting::PaletteRow(value) => {
+                    self.ui.palette.each_row = value.0 as _;
+                }
+                Setting::PaletteLeft(value) => {
+                    self.ui.palette.from_left = value.0 as _;
+                }
             },
             Command::Toggle(expr) => match self.settings.parse_toggleable(&expr)? {
                 Setting::Toggleable(t, _) => match t {
@@ -267,6 +313,9 @@ impl Engine {
                     Toggleable::Picker => {
                         self.picker = !self.picker;
                         self.mode.message(&format!("  picker={}", self.picker));
+                        if self.picker {
+                            self.active_buffer_mut().ok().map(|b| b.clear_temporary());
+                        }
                     }
                     Toggleable::Checker => {
                         self.checker = !self.checker;
@@ -317,6 +366,16 @@ impl Engine {
                         let value = self.display.toggle_tile();
                         self.mode.message(&format!("  tile={}", value));
                     }
+                    Toggleable::CursorSystem => {
+                        self.system_cursor = !self.system_cursor;
+                        self.mode
+                            .message(&format!("  cursor/system={}", self.system_cursor));
+                    }
+                    Toggleable::SoftwareRender => {
+                        self.software_render = !self.software_render;
+                        self.mode
+                            .message(&format!("  render/software={}", self.software_render));
+                    }
                     Toggleable::Debug => {
                         self.debug = !self.debug;
                         self.mode.message(&format!("  debug={}", self.debug));
@@ -324,6 +383,15 @@ impl Engine {
                 },
                 _ => self.mode.error("Setting cannot be toggled"),
             },
+            Command::BrushSize(size) => self.tool_setting.brush.set_size(size.0.clamp(1, 255) as _),
+            Command::BrushSizeIncrease(value) => self
+                .tool_setting
+                .brush
+                .size_increase(value.0.clamp(1, 255) as _),
+            Command::BrushSizeDecrease(value) => self
+                .tool_setting
+                .brush
+                .size_decrease(value.0.clamp(1, 255) as _),
             Command::Map(map) => {
                 self.key_map
                     .normal_map
@@ -392,7 +460,7 @@ impl Engine {
                         }
                     }
                     match buffer.batch_edit(Some("reduce"), reduced, None, false) {
-                        Ok(_) => self.mode.message("Used reduce"),
+                        Ok(_) => self.mode.reset(Some(Message::normal("Used reduce"))),
                         Err(EditError::Unchanged) => self.mode.message("Already reduced"),
                         _ => (),
                     }
@@ -412,7 +480,7 @@ impl Engine {
                     )
                     .is_ok()
                 {
-                    self.mode.message("Used quantize")
+                    self.mode.reset(Some(Message::normal("Used quantize")))
                 }
             }
             Command::LayerGoAbove(count) => {
@@ -516,7 +584,7 @@ impl Engine {
                 self.mode
                     .reset(Some(Message::normal("Deleted current frame")));
             }
-            Command::Slice(count) => {
+            Command::FrameSlice(count) => {
                 let buffer = self.active_buffer_mut()?;
                 if buffer.num_frames() == 1 {
                     if count.0 > 1 {
@@ -533,13 +601,27 @@ impl Engine {
                         .error("Workspace already contains multiple frames");
                 }
             }
+            Command::FrameUnslice => {
+                let buffer = self.active_buffer_mut()?;
+                let num_frames = buffer.num_frames();
+                if num_frames > 1 {
+                    buffer.unslice();
+                    self.mode.reset(Some(Message::normal(&format!(
+                        "Unsliced {} frames into one",
+                        num_frames
+                    ))));
+                } else {
+                    self.mode
+                        .error("Workspace does not contain multiple frames");
+                }
+            }
             Command::SelectAll => {
                 let buffer = self.active_buffer_mut()?;
                 buffer.edit_selection("select all", |i, _s, _sym| {
-                    let mut selection = Selection::new();
+                    let mut selection = Selection::with_capacity(i.size());
                     for x in 0..i.width() as i32 {
                         for y in 0..i.height() as i32 {
-                            selection.insert((x, y));
+                            selection.insert_unchecked((x, y));
                         }
                     }
                     selection
@@ -549,11 +631,11 @@ impl Engine {
             Command::SelectInvert => {
                 let buffer = self.active_buffer_mut()?;
                 buffer.edit_selection("invert selection", |i, s, _sym| {
-                    let mut selection = Selection::new();
+                    let mut selection = Selection::with_capacity(i.size());
                     for x in 0..i.width() as i32 {
                         for y in 0..i.height() as i32 {
-                            if !s.contains(&(x, y)) {
-                                selection.insert((x, y));
+                            if !s.contains((x, y)) {
+                                selection.insert_unchecked((x, y));
                             }
                         }
                     }
@@ -565,9 +647,38 @@ impl Engine {
             Command::SelectClear => {
                 let buffer = self.active_buffer_mut()?;
                 if !buffer.selection().is_empty() {
-                    buffer.edit_selection("clear selection", |_i, _s, _sym| Selection::new());
+                    buffer.edit_selection("clear selection", |i, _s, _sym| {
+                        Selection::with_capacity(i.size())
+                    });
                     self.mode
                         .set_to_normal(Some(Message::normal("Used clear selection")));
+                }
+            }
+            Command::SelectGrid => {
+                let draw_mode = self.mode.is_visual().then_some(self.draw_mode.1);
+                let buffer = self.active_buffer_mut()?;
+                let grid = buffer.session.grid;
+                if grid.on {
+                    let cursor = buffer.cursor();
+                    if buffer.image().is_in_bound(cursor.0, cursor.1) {
+                        let (w, h) = (grid.size.0 as _, grid.size.1 as _);
+                        buffer.edit_selection("select grid", |i, s, _sym| {
+                            let mut g = Selection::with_capacity(i.size());
+                            let gx = cursor.0 / w;
+                            let gy = cursor.1 / h;
+                            for x in 0..w {
+                                for y in 0..h {
+                                    g.insert_unchecked((gx * w + x, gy * h + y));
+                                }
+                            }
+                            draw_mode.map(|m| m.apply(s.clone(), &g)).unwrap_or(g)
+                        });
+                        self.mode.reset(Some(Message::normal("Used select grid")));
+                    } else {
+                        self.mode.error("Cursor is not in bound");
+                    }
+                } else {
+                    self.mode.error("Buffer has no grid");
                 }
             }
             Command::PaletteAdd(color) => {
@@ -658,7 +769,7 @@ impl Engine {
                                     + sym.x_offset,
                                 register.offset.1,
                             );
-                            register = register.offset(offset);
+                            register = register.with_offset(offset);
                         }
                         let reg_idx = tool::paste(
                             &register,
@@ -667,6 +778,7 @@ impl Engine {
                             Some(img_idx),
                             None,
                             self.draw_mode.0,
+                            None, // software render for now
                         )
                         .2;
                         self.mode = Mode::paste(
@@ -728,7 +840,7 @@ impl Engine {
                                     - register.height() as i32
                                     + sym.y_offset,
                             );
-                            register = register.offset(offset);
+                            register = register.with_offset(offset);
                         }
                         let reg_idx = tool::paste(
                             &register,
@@ -737,6 +849,7 @@ impl Engine {
                             Some(img_idx),
                             None,
                             self.draw_mode.0,
+                            None, // software render for now
                         )
                         .2;
                         self.mode = Mode::paste(
@@ -776,14 +889,10 @@ impl Engine {
                     register.offset.0 += paste_info.offset.0;
                     register.offset.1 += paste_info.offset.1;
                     self.registers.insert('"', register);
-                    self.mode
-                        .set_message(Message::normal("Yanked to register \"\""));
+                    self.mode.message("Yanked to register \"\"");
                 } else if let Some(r) = Register::new(buffer.image(), buffer.selection()) {
                     self.registers.insert('"', r);
-                    self.mode
-                        .set_message(Message::normal("Yanked to register \"\""));
-                } else if let Some(cursor) = buffer.cursor() {
-                    buffer.picker(cursor).map(|c| self.color = c);
+                    self.mode.message("Yanked to register \"\"");
                 }
             }
             Command::Paste => {
@@ -799,7 +908,9 @@ impl Engine {
                         None,
                         None,
                         self.draw_mode.0,
+                        None, // software render for now
                     );
+                    buffer.animation.paused = true;
                     self.tool = Tool::Move;
                     self.mode = Mode::paste(
                         image,
@@ -827,7 +938,7 @@ impl Engine {
                     register.offset.1 += paste_info.offset.1;
                     self.registers.insert('"', register);
                     buffer.edit_infallible("cut", |_i, _s, _sym| paste_info.image, false);
-                    buffer.amend_selection(|_i, _s, _sym| Selection::new());
+                    buffer.amend_selection(|i, _s, _sym| Selection::with_capacity(i.size()));
                     self.mode
                         .set_to_normal(Some(Message::normal("Cut to register \"\"")));
                 } else if let Some(r) = Register::new(buffer.image(), buffer.selection()) {
@@ -839,7 +950,7 @@ impl Engine {
                             false,
                         )
                         .expect("infallible");
-                    buffer.amend_selection(|_i, _s, _sym| Selection::new());
+                    buffer.amend_selection(|i, _s, _sym| Selection::with_capacity(i.size()));
                     self.mode
                         .set_to_normal(Some(Message::normal("Cut to register \"\"")));
                 }
@@ -851,12 +962,12 @@ impl Engine {
                     .ok_or("No active buffer")?;
                 if Register::new(buffer.image(), buffer.selection()).is_some() {
                     buffer.edit_infallible("cut", |i, s, _sym| crate::tool::cut(i, s), false);
-                    buffer.amend_selection(|_i, _s, _sym| Selection::new());
+                    buffer.amend_selection(|i, _s, _sym| Selection::with_capacity(i.size()));
                     self.mode.set_to_normal(Some(Message::normal("Delete")));
                 }
             }
             Command::PasteSystem => {
-                if let Some(buf) = miniquad::window::clipboard_get_image() {
+                if let Some(buf) = miniquad::window::clipboard_get_with_format("image/png") {
                     if let Ok(image) = crate::format::load_png(&buf[..]) {
                         let buffer = self.new_buffer_from_image(image);
                         buffer.session.mark_unsaved();
